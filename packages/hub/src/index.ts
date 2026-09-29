@@ -120,7 +120,10 @@ const agentServer = createAgentServer(db, config.hubAgentToken, {
   },
 });
 
-app.use('/api', createApiRouter(db, agentServer, browserServer, config.appPassword));
+app.use('/api', createApiRouter(db, agentServer, browserServer, config.appPassword, {
+  escanorApiUrl: config.escanorApiUrl,
+  allowedEmails: config.allowedEmails,
+}));
 app.use(express.static(config.webDist));
 app.get('*', (_req, res) => {
   res.sendFile('index.html', { root: config.webDist });

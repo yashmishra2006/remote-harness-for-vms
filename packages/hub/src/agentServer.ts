@@ -1,7 +1,7 @@
 import { randomUUID } from 'node:crypto';
 import type { IncomingMessage } from 'node:http';
 import { WebSocketServer, WebSocket } from 'ws';
-import type { AgentToHubMessage, AgentSessionSummary, ClaudeAccount, HubToAgentMessage } from '@remote-harness/shared';
+import type { AgentToHubMessage, AgentSessionSummary, ClaudeAccount, HubToAgentMessage, HubUserInput, McpServerConfig } from '@remote-harness/shared';
 import type { Db } from './db.js';
 
 const PROJECTS_REQUEST_TIMEOUT_MS = 5000;
@@ -11,6 +11,14 @@ export type AgentEventHandlers = {
   onEvent: (vmId: string, msg: AgentToHubMessage) => void;
   onStatusChange: (vmId: string, vmName: string, connected: boolean) => void;
 };
+
+function withMcpServers(db: Db, msg: HubUserInput): HubUserInput {
+  const servers = db.listMcpServers();
+  if (servers.length === 0) return msg;
+  const mcpServers: Record<string, McpServerConfig> = {};
+  for (const s of servers) mcpServers[s.name] = { type: 'http', url: s.url, headers: { Authorization: `Bearer ${s.token}` } };
+  return { ...msg, mcpServers };
+}
 
 export function createAgentServer(db: Db, token: string, handlers: AgentEventHandlers) {
   const wss = new WebSocketServer({ noServer: true });
@@ -76,7 +84,7 @@ export function createAgentServer(db: Db, token: string, handlers: AgentEventHan
     sendToVm(vmId: string, msg: HubToAgentMessage): boolean {
       const ws = byVmId.get(vmId);
       if (!ws || ws.readyState !== WebSocket.OPEN) return false;
-      ws.send(JSON.stringify(msg));
+      ws.send(JSON.stringify(msg.type === 'user_input' ? withMcpServers(db, msg) : msg));
       return true;
     },
     connectedVmIds(): string[] {

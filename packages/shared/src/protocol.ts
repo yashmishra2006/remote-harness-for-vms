@@ -89,6 +89,8 @@ export type AgentToHubMessage =
 
 // ---------- Hub -> Agent ----------
 
+export type McpServerConfig = { type: 'http'; url: string; headers?: Record<string, string> };
+
 export type HubUserInput = {
   type: 'user_input';
   sessionId: string; // real session id, or the tempId for a brand-new chat
@@ -97,6 +99,7 @@ export type HubUserInput = {
   accountId?: string; // used only when starting a brand-new session
   text: string;
   images?: ImageAttachment[];
+  mcpServers?: Record<string, McpServerConfig>; // attached by the hub; used only when starting/resuming a session
 };
 
 export type HubInterrupt = {

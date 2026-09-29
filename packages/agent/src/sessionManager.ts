@@ -121,6 +121,7 @@ export class SessionManager {
       },
     };
     if (isResume) options.resume = input.sessionId;
+    if (input.mcpServers) options.mcpServers = input.mcpServers;
     if (profile.configDir) options.env = { ...process.env, CLAUDE_CONFIG_DIR: profile.configDir };
 
     const q = query({ prompt: queue, options });

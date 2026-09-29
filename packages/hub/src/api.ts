@@ -14,7 +14,9 @@ function contentBlocks(text: string, images: ImageAttachment[] | undefined) {
   return blocks;
 }
 
-export function createApiRouter(db: Db, agentServer: AgentServer, browserServer: BrowserServer, appPassword: string) {
+export function createApiRouter(db: Db, agentServer: AgentServer, browserServer: BrowserServer, appPassword: string,
+  escanor: { escanorApiUrl: string; allowedEmails: string[] },
+) {
   const router = Router();
 
   router.post('/login', (req: Request, res: Response) => {
@@ -24,6 +26,40 @@ export function createApiRouter(db: Db, agentServer: AgentServer, browserServer:
       return;
     }
     res.json({ token: db.createAuthToken() });
+  });
+
+  router.post('/login/escanor', async (req: Request, res: Response) => {
+    const accessToken = String(req.body?.accessToken ?? '');
+    if (!accessToken) {
+      res.status(400).json({ error: 'accessToken required' });
+      return;
+    }
+    let session: any;
+    try {
+      const r = await fetch(`${escanor.escanorApiUrl}/auth/session`, {
+        headers: { authorization: `Bearer ${accessToken}` },
+        signal: AbortSignal.timeout(10_000),
+      });
+      if (!r.ok) {
+        res.status(401).json({ error: 'Escanor rejected the token' });
+        return;
+      }
+      session = await r.json();
+    } catch {
+      res.status(502).json({ error: 'Could not reach Escanor to verify the token' });
+      return;
+    }
+    const u = session?.user;
+    if (!u?.id || !u?.email) {
+      res.status(502).json({ error: 'Unexpected Escanor session response' });
+      return;
+    }
+    const hubUser = db.upsertHubUser({ id: String(u.id), email: String(u.email), name: u.name ?? null }, escanor.allowedEmails);
+    if (!hubUser) {
+      res.status(403).json({ error: 'This hub already belongs to another account' });
+      return;
+    }
+    res.json({ token: db.createAuthToken(), hubId: hubUser.hubId });
   });
 
   function requireAuth(req: Request, res: Response, next: NextFunction): void {
@@ -37,6 +73,25 @@ export function createApiRouter(db: Db, agentServer: AgentServer, browserServer:
   }
 
   router.use(requireAuth);
+
+  router.get('/mcp', (_req, res) => {
+    res.json({ servers: db.listMcpServers().map((s) => ({ name: s.name, url: s.url })) });
+  });
+
+  router.post('/mcp/escanor', (req, res) => {
+    const { url, token } = req.body ?? {};
+    if (typeof token !== 'string' || !token || typeof url !== 'string' || !/^https?:\/\//.test(url)) {
+      res.status(400).json({ error: 'url (http/https) and token required' });
+      return;
+    }
+    db.setMcpServer('escanor', url, token);
+    res.json({ ok: true });
+  });
+
+  router.delete('/mcp/escanor', (_req, res) => {
+    db.removeMcpServer('escanor');
+    res.json({ ok: true });
+  });
 
   router.get('/vms', (_req, res) => {
     const vms = db.listVms().map((v) => ({ ...v, connected: agentServer.isConnected(v.id) }));

@@ -17,6 +17,23 @@ export function setHubUrl(url: string): void {
   else localStorage.removeItem(HUB_URL_KEY);
 }
 
+// Empty means "this server" (the browser case, where the hub serves the app).
+export function normalizeHubUrl(input: string): string {
+  const url = input.trim().replace(/\/+$/, '');
+  if (!url) return '';
+  if (!/^https?:\/\/[^\s/]+/.test(url)) throw new Error('Hub URL must start with http:// or https://');
+  return url;
+}
+
+// Any HTTP answer (even 401) proves a hub is there; only a network failure means it isn't.
+export async function checkHubReachable(url: string): Promise<void> {
+  try {
+    await fetch(`${url}/api/mcp`, { signal: AbortSignal.timeout(8000) });
+  } catch {
+    throw new Error('Could not reach a hub at that address.');
+  }
+}
+
 export function getToken(): string | null {
   return localStorage.getItem(TOKEN_KEY);
 }
@@ -50,6 +67,11 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
 
 export const api = {
   login: (password: string) => request<{ token: string }>('/login', { method: 'POST', body: JSON.stringify({ password }) }),
+  loginWithEscanor: (accessToken: string) =>
+    request<{ token: string; hubId: string }>('/login/escanor', { method: 'POST', body: JSON.stringify({ accessToken }) }),
+  listMcp: () => request<{ servers: { name: string; url: string }[] }>('/mcp'),
+  setEscanorMcp: (url: string, token: string) => request<{ ok: true }>('/mcp/escanor', { method: 'POST', body: JSON.stringify({ url, token }) }),
+  removeEscanorMcp: () => request<{ ok: true }>('/mcp/escanor', { method: 'DELETE' }),
   listVms: () => request<VmDto[]>('/vms'),
   listSessions: (vmId: string) => request<SessionDto[]>(`/vms/${vmId}/sessions`),
   listProjects: (vmId: string) => request<string[]>(`/vms/${vmId}/projects`),

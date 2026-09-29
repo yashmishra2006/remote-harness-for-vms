@@ -3,6 +3,8 @@ import type {
   AgentToHubMessage,
   ClaudeAccount,
   HubToAgentMessage,
+  HubUserInput,
+  McpServerConfig,
   HubToBrowserMessage,
   ImageAttachment,
   MessageDto,
@@ -17,7 +19,7 @@ type AgentAttachment = { vmId?: string; vmName?: string };
 const CORS = {
   'Access-Control-Allow-Origin': '*',
   'Access-Control-Allow-Headers': 'authorization, content-type',
-  'Access-Control-Allow-Methods': 'GET, POST, OPTIONS',
+  'Access-Control-Allow-Methods': 'GET, POST, DELETE, OPTIONS',
 };
 
 function json(body: unknown, status = 200): Response {
@@ -65,9 +67,22 @@ export class Hub extends DurableObject<Env> {
         created_at TEXT NOT NULL
       );
       CREATE INDEX IF NOT EXISTS idx_messages_session ON messages(session_id, id);
+      CREATE TABLE IF NOT EXISTS hub_users (
+        escanor_user_id TEXT PRIMARY KEY,
+        hub_id TEXT NOT NULL UNIQUE,
+        email TEXT NOT NULL,
+        name TEXT,
+        created_at TEXT NOT NULL
+      );
       CREATE TABLE IF NOT EXISTS auth_tokens (
         token TEXT PRIMARY KEY,
         created_at TEXT NOT NULL
+      );
+      CREATE TABLE IF NOT EXISTS mcp_servers (
+        name TEXT PRIMARY KEY,
+        url TEXT NOT NULL,
+        token TEXT NOT NULL,
+        updated_at TEXT NOT NULL
       );
     `);
     // Answered by the runtime without waking the object, so idle browser tabs stay connected cheaply.
@@ -169,11 +184,19 @@ export class Hub extends DurableObject<Env> {
     const ws = this.agentFor(vmId);
     if (!ws) return false;
     try {
-      ws.send(JSON.stringify(msg));
+      ws.send(JSON.stringify(msg.type === 'user_input' ? this.withMcpServers(msg) : msg));
       return true;
     } catch {
       return false;
     }
+  }
+
+  private withMcpServers(msg: HubUserInput): HubUserInput {
+    const rows = this.sql.exec('SELECT name, url, token FROM mcp_servers ORDER BY name').toArray() as { name: string; url: string; token: string }[];
+    if (rows.length === 0) return msg;
+    const mcpServers: Record<string, McpServerConfig> = {};
+    for (const r of rows) mcpServers[r.name] = { type: 'http', url: r.url, headers: { Authorization: `Bearer ${r.token}` } };
+    return { ...msg, mcpServers };
   }
 
   private broadcast(msg: HubToBrowserMessage) {
@@ -359,6 +382,37 @@ export class Hub extends DurableObject<Env> {
 
   // ---------- REST API ----------
 
+  // Single-tenant: the first Escanor user to sign in owns the hub; others need HUB_ALLOWED_EMAILS.
+  private async loginWithEscanor(accessToken: unknown): Promise<Response> {
+    if (typeof accessToken !== 'string' || !accessToken) return json({ error: 'accessToken required' }, 400);
+    const apiUrl = (this.env.ESCANOR_API_URL || 'https://api.escanor.in/api/v1').replace(/\/+$/, '');
+    let session: any;
+    try {
+      const r = await fetch(`${apiUrl}/auth/session`, { headers: { authorization: `Bearer ${accessToken}` } });
+      if (!r.ok) return json({ error: 'Escanor rejected the token' }, 401);
+      session = await r.json();
+    } catch {
+      return json({ error: 'Could not reach Escanor to verify the token' }, 502);
+    }
+    const u = session?.user;
+    if (!u?.id || !u?.email) return json({ error: 'Unexpected Escanor session response' }, 502);
+
+    const existing = this.sql.exec('SELECT hub_id FROM hub_users WHERE escanor_user_id = ?', String(u.id)).toArray() as { hub_id: string }[];
+    let hubId = existing[0]?.hub_id;
+    if (!hubId) {
+      const count = (this.sql.exec('SELECT COUNT(*) AS n FROM hub_users').toArray()[0] as { n: number }).n;
+      const allowed = (this.env.HUB_ALLOWED_EMAILS ?? '').split(',').map((e) => e.trim().toLowerCase()).filter(Boolean);
+      if (count > 0 && !allowed.includes(String(u.email).toLowerCase())) {
+        return json({ error: 'This hub already belongs to another account' }, 403);
+      }
+      hubId = `hub_${crypto.randomUUID()}`;
+      this.sql.exec('INSERT INTO hub_users (escanor_user_id, hub_id, email, name, created_at) VALUES (?, ?, ?, ?, ?)', String(u.id), hubId, String(u.email), u.name ?? null, this.now());
+    }
+    const token = crypto.randomUUID() + crypto.randomUUID();
+    this.sql.exec('INSERT INTO auth_tokens (token, created_at) VALUES (?, ?)', token, this.now());
+    return json({ token, hubId });
+  }
+
   private async handleApi(request: Request, url: URL): Promise<Response> {
     const path = url.pathname.replace(/^\/api/, '');
     const method = request.method;
@@ -371,8 +425,28 @@ export class Hub extends DurableObject<Env> {
       return json({ token });
     }
 
+    if (method === 'POST' && path === '/login/escanor') return this.loginWithEscanor((body as any)?.accessToken);
+
     const header = request.headers.get('authorization') ?? '';
     if (!this.isValidToken(header.startsWith('Bearer ') ? header.slice(7) : '')) return json({ error: 'Unauthorized' }, 401);
+
+    if (method === 'GET' && path === '/mcp') {
+      const rows = this.sql.exec('SELECT name, url FROM mcp_servers ORDER BY name').toArray();
+      return json({ servers: rows });
+    }
+    if (method === 'POST' && path === '/mcp/escanor') {
+      const { url, token } = body as { url?: unknown; token?: unknown };
+      if (typeof token !== 'string' || !token || typeof url !== 'string' || !/^https?:\/\//.test(url)) return json({ error: 'url (http/https) and token required' }, 400);
+      this.sql.exec(
+        'INSERT INTO mcp_servers (name, url, token, updated_at) VALUES (?, ?, ?, ?) ON CONFLICT(name) DO UPDATE SET url = excluded.url, token = excluded.token, updated_at = excluded.updated_at',
+        'escanor', url, token, this.now(),
+      );
+      return json({ ok: true });
+    }
+    if (method === 'DELETE' && path === '/mcp/escanor') {
+      this.sql.exec("DELETE FROM mcp_servers WHERE name = 'escanor'");
+      return json({ ok: true });
+    }
 
     if (method === 'GET' && path === '/vms') {
       const rows = this.sql

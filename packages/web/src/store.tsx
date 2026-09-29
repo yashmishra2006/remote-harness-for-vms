@@ -112,6 +112,10 @@ function buildActions(dispatch: React.Dispatch<Action>) {
       setToken(token);
       dispatch({ type: 'set_authed', authed: true });
     },
+    loginWithToken(token: string) {
+      setToken(token);
+      dispatch({ type: 'set_authed', authed: true });
+    },
     logout() {
       setToken(null);
       dispatch({ type: 'set_authed', authed: false });

@@ -96,6 +96,24 @@ into `$PROFILES_DIR` instead of re-running setup — see `packages/agent/.env.ex
 - **Auth**: single shared `APP_PASSWORD` for the app and a single shared
   `HUB_AGENT_TOKEN` for all agents — deliberately simple for personal/small-team use.
   Put the hub behind TLS if it's reachable from the internet.
+- **Escanor account + integrations**: the app can also sign in with Google through
+  [Escanor](https://escanor.in) ("Continue with Google" on the login screen) and shows
+  Escanor's integrations catalog under **Integrations** in the sidebar. OAuth runs in the
+  system browser and returns via the `io.visey.remoteharness://` deep link (Android) or a
+  normal redirect (web). The hub verifies the Escanor token and issues its normal bearer
+  token plus a stable `hubId`. The hub stays single-tenant: the first Escanor user owns it;
+  other emails get 403 unless listed in `HUB_ALLOWED_EMAILS`. `ESCANOR_API_URL` (hub) and
+  `VITE_ESCANOR_API_URL` (web build) default to `https://api.escanor.in/api/v1`.
+  Password login keeps working.
+- **Escanor MCP for Claude sessions**: on Google login the app mints a restricted Escanor MCP
+  token and stores it on the hub (Settings -> Escanor MCP can disconnect/reconnect). The hub
+  attaches it to each message it sends to the agent, which passes it to Claude as an HTTP
+  `mcpServers` entry, so sessions on any VM can use the signed-in user's Escanor integrations.
+  It applies to new or resumed chats (not ones already running), and the agent on each VM must
+  be updated. Hub-password logins have no Escanor identity, so they cannot attach MCP.
+- **Hub URL**: the login screen and Settings have an editable hub address. Leave it empty in
+  the browser to use the server that served the app; the Android app requires one. Changing it
+  signs you out, and the hub must be reachable (CORS is open on both hub implementations).
 
 ## Local development
 

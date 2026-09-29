@@ -1,6 +1,8 @@
 import { useEffect, useMemo, useState } from 'react';
 import type { ClaudeAccount, SessionDto } from '@remote-harness/shared';
 import { useStore } from '../store';
+import { useEscanor } from '../escanor/EscanorProvider';
+import UserMenu from './UserMenu';
 
 function relativeTime(iso: string): string {
   const diffMs = Date.now() - new Date(iso).getTime();
@@ -42,10 +44,33 @@ function NewChatRow({ onClick }: { onClick: () => void }) {
   );
 }
 
-export default function Sidebar({ className, onSelectSession }: { className: string; onSelectSession: () => void }) {
+const NavRow = ({ icon, label, active, onClick }: { icon: React.ReactNode; label: string; active?: boolean; onClick: () => void }) => (
+  <button
+    onClick={onClick}
+    className={`flex w-full items-center gap-2.5 rounded-md px-3 py-2 text-left text-[13px] transition hover:bg-surface-card ${active ? 'bg-surface-card font-medium text-ink' : 'text-body'}`}
+  >
+    <span className="flex h-4 w-4 items-center justify-center text-muted">{icon}</span>
+    {label}
+  </button>
+);
+
+export default function Sidebar({
+  className,
+  view,
+  onSelectSession,
+  onOpenIntegrations,
+  onOpenSettings,
+}: {
+  className: string;
+  view: 'chat' | 'integrations' | 'settings';
+  onSelectSession: () => void;
+  onOpenIntegrations: () => void;
+  onOpenSettings: () => void;
+}) {
   const { state, actions } = useStore();
   const [expandedVmId, setExpandedVmId] = useState<string | null>(null);
   const [query, setQuery] = useState('');
+  const { session } = useEscanor();
 
   useEffect(() => {
     actions.refreshVms();
@@ -76,13 +101,19 @@ export default function Sidebar({ className, onSelectSession }: { className: str
     onSelectSession();
   }
 
+  function startNewChat() {
+    const vm = state.vms.find((v) => v.id === state.selectedVmId) ?? state.vms[0];
+    if (!vm) return;
+    newChat(vm.id, vm.accounts?.[0]?.id ?? 'default');
+  }
+
   const q = query.trim().toLowerCase();
   function matchSession(s: SessionDto): boolean {
     return !q || s.title.toLowerCase().includes(q);
   }
 
   return (
-    <div className={`${className} safe-top w-full flex-col border-r border-hairline bg-surface-soft md:w-80`}>
+    <div className={`${className} safe-top h-full w-full flex-col border-r border-hairline bg-surface-soft`}>
       <div className="flex items-center gap-2.5 px-5 pb-3 pt-5">
         <div className="flex h-8 w-8 items-center justify-center rounded-md bg-surface-dark text-primary">
           <svg width="14" height="14" viewBox="0 0 100 100" fill="none">
@@ -91,6 +122,21 @@ export default function Sidebar({ className, onSelectSession }: { className: str
           </svg>
         </div>
         <h1 className="text-[15px] font-semibold tracking-tight text-ink">Remote Harness</h1>
+      </div>
+
+      <div className="space-y-0.5 px-3 pb-2">
+        <NavRow
+          active={view === 'chat' && !state.selectedSessionId}
+          onClick={startNewChat}
+          label="New chat"
+          icon={<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M12 5v14M5 12h14" stroke="currentColor" strokeWidth="2" strokeLinecap="round" /></svg>}
+        />
+        <NavRow
+          active={view === 'integrations'}
+          onClick={onOpenIntegrations}
+          label="Integrations"
+          icon={<svg width="15" height="15" viewBox="0 0 24 24" fill="none"><path d="M9 3v5M15 3v5M7 8h10v4a5 5 0 01-10 0V8zM12 17v4" stroke="currentColor" strokeWidth="1.8" strokeLinecap="round" strokeLinejoin="round" /></svg>}
+        />
       </div>
 
       <div className="px-3 pb-2">
@@ -165,6 +211,7 @@ export default function Sidebar({ className, onSelectSession }: { className: str
           );
         })}
       </div>
+      <UserMenu session={session} onOpenSettings={onOpenSettings} />
     </div>
   );
 }
