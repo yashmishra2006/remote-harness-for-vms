@@ -1,3 +1,4 @@
+import LegalLinks from './LegalLinks';
 import { useState } from 'react';
 import { useStore } from '../store';
 import { getHubUrl, isNative, setHubUrl } from '../api';
@@ -49,6 +50,7 @@ export default function Login() {
         <Button type="submit" disabled={busy || !password || (native && !hubUrl)} className="w-full py-3">
           {busy ? 'Signing in…' : 'Sign in'}
         </Button>
+        <LegalLinks />
       </form>
     </AuthShell>
   );

@@ -12,20 +12,22 @@ export class HubSocket {
   private pingTimer: ReturnType<typeof setInterval> | null = null;
 
   connect(): void {
-    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
     this.stopped = false;
+    if (this.ws && (this.ws.readyState === WebSocket.OPEN || this.ws.readyState === WebSocket.CONNECTING)) return;
     const token = getToken();
     if (!token) return;
     const hub = getHubUrl();
     const base = hub ? hub.replace(/^http/, 'ws') : `${window.location.protocol === 'https:' ? 'wss' : 'ws'}://${window.location.host}`;
-    const ws = new WebSocket(`${base}/ws?token=${encodeURIComponent(token)}`);
+    const ws = new WebSocket(`${base}/ws`, ['escanor.hub.v1', `escanor.auth.${token}`]);
     this.ws = ws;
 
     // Keeps the connection alive through Cloudflare's idle timeout; the hub answers 'pong' itself.
     ws.onopen = () => {
+      if (this.stopped || this.ws !== ws) return;
       this.pingTimer = setInterval(() => ws.readyState === WebSocket.OPEN && ws.send('ping'), 25_000);
     };
     ws.onmessage = (evt) => {
+      if (this.stopped || this.ws !== ws) return;
       try {
         const msg = JSON.parse(evt.data) as HubToBrowserMessage;
         for (const h of this.handlers) h(msg);
@@ -34,8 +36,9 @@ export class HubSocket {
       }
     };
     ws.onclose = () => {
+      if (this.ws !== ws) return;
       if (this.pingTimer) clearInterval(this.pingTimer);
-      if (!this.stopped) setTimeout(() => this.connect(), RECONNECT_DELAY_MS);
+      if (!this.stopped) setTimeout(() => { if (!this.stopped) this.connect(); }, RECONNECT_DELAY_MS);
     };
   }
 
@@ -46,6 +49,8 @@ export class HubSocket {
 
   stop(): void {
     this.stopped = true;
+    if (this.pingTimer) clearInterval(this.pingTimer);
+    this.pingTimer = null;
     this.ws?.close();
     this.ws = null;
   }

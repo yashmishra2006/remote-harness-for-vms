@@ -19,7 +19,7 @@ before(async () => {
   // Spawned directly (not via npx) so that killing it in `after` kills the hub itself, not just a wrapper.
   proc = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     cwd: new URL('..', import.meta.url).pathname,
-    env: { ...process.env, PORT: String(PORT), HUB_AGENT_TOKEN: 'agent-secret', APP_PASSWORD: 'pw', DATA_DIR: dataDir, WEB_DIST: dataDir },
+    env: { ...process.env, PORT: String(PORT), HUB_AGENT_TOKEN: 'agent-secret-for-tests-only-123', APP_PASSWORD: 'password-for-tests-only-123456', DATA_DIR: dataDir, WEB_DIST: dataDir },
     stdio: 'ignore',
   });
   for (let i = 0; i < 60; i++) {
@@ -30,7 +30,7 @@ before(async () => {
       await new Promise((r) => setTimeout(r, 250));
     }
   }
-  const { token } = await (await fetch(`${HUB}/api/login`, { method: 'POST', headers: json, body: JSON.stringify({ password: 'pw' }) })).json();
+  const { token } = await (await fetch(`${HUB}/api/login`, { method: 'POST', headers: json, body: JSON.stringify({ password: 'password-for-tests-only-123456' }) })).json();
   auth = { authorization: `Bearer ${token}`, ...json };
 });
 
@@ -43,7 +43,7 @@ const put = (name: string, body: unknown, headers = auth) => fetch(`${HUB}/api/m
 
 function connectAgent(vmName: string, agentVersion = '0.3.0') {
   const inbox: any[] = [];
-  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/agent`, { headers: { authorization: 'Bearer agent-secret' } });
+  const ws = new WebSocket(`ws://127.0.0.1:${PORT}/agent`, { headers: { authorization: 'Bearer agent-secret-for-tests-only-123' } });
   ws.on('message', (d) => inbox.push(JSON.parse(d.toString())));
   const ready = new Promise<void>((res) => ws.on('open', () => {
     ws.send(JSON.stringify({ type: 'hello', agentVersion, vmName, hostname: 'h', accounts: [], sessions: [] }));
@@ -143,7 +143,7 @@ test('an agent too old to install MCP servers is reported as needing an update, 
 });
 
 const login = async () =>
-  ({ authorization: `Bearer ${(await (await fetch(`${HUB}/api/login`, { method: 'POST', headers: json, body: JSON.stringify({ password: 'pw' }) })).json()).token}`, ...json });
+  ({ authorization: `Bearer ${(await (await fetch(`${HUB}/api/login`, { method: 'POST', headers: json, body: JSON.stringify({ password: 'password-for-tests-only-123456' }) })).json()).token}`, ...json });
 
 test('signing out revokes the token everywhere', async () => {
   const session = await login();

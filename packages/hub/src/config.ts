@@ -3,6 +3,7 @@ import { resolve } from 'node:path';
 function required(name: string): string {
   const v = process.env[name];
   if (!v) throw new Error(`Missing required env var ${name}`);
+  if (v.length < 24) throw new Error(`${name} must be a random secret of at least 24 characters`);
   return v;
 }
 

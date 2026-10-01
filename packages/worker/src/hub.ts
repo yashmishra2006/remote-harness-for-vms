@@ -21,10 +21,19 @@ import type { Env } from './index';
 
 const PROJECTS_REQUEST_TIMEOUT_MS = 5000;
 
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+async function sessionDigest(token: string): Promise<string> {
+  const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
+  return `sha256:${Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, '0')).join('')}`;
+}
+
 type AgentAttachment = { vmId?: string; vmName?: string };
 
 const CORS = {
   'Access-Control-Allow-Origin': '*',
+  'Cache-Control': 'no-store',
+  'X-Content-Type-Options': 'nosniff',
+  'Referrer-Policy': 'no-referrer',
   'Access-Control-Allow-Headers': 'authorization, content-type',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
 };
@@ -100,6 +109,13 @@ export class Hub extends DurableObject<Env> {
       );
     `);
     // Answered by the runtime without waking the object, so idle browser tabs stay connected cheaply.
+    ctx.blockConcurrencyWhile(async () => {
+      for (const table of ['auth_tokens', 'api_tokens']) {
+        for (const row of this.sql.exec(`SELECT token FROM ${table}`).toArray() as { token: string }[]) {
+          if (!row.token.startsWith('sha256:')) this.sql.exec(`UPDATE ${table} SET token = ? WHERE token = ?`, await sessionDigest(row.token), row.token);
+        }
+      }
+    });
     ctx.setWebSocketAutoResponse(new WebSocketRequestResponsePair('ping', 'pong'));
   }
 
@@ -228,17 +244,22 @@ export class Hub extends DurableObject<Env> {
     }
   }
 
-  private isValidToken(token: string): boolean {
-    if (!token) return false;
-    return (
-      this.sql.exec('SELECT 1 FROM auth_tokens WHERE token = ?', token).toArray().length > 0 ||
-      this.sql.exec('SELECT 1 FROM api_tokens WHERE token = ?', token).toArray().length > 0
-    );
+  private async isValidToken(token: string): Promise<boolean> {
+    return Boolean(token) && token.length <= 512 && this.isValidDigest(await sessionDigest(token));
   }
-
-  private revokeToken(token: string) {
-    this.sql.exec('DELETE FROM auth_tokens WHERE token = ?', token);
-    this.sql.exec('DELETE FROM api_tokens WHERE token = ?', token);
+  private isValidDigest(digest: string): boolean {
+    const row = this.sql.exec('SELECT created_at FROM auth_tokens WHERE token = ?', digest).toArray()[0] as { created_at: string } | undefined;
+    const age = row ? Date.now() - Date.parse(row.created_at) : NaN;
+    return (Number.isFinite(age) && age >= 0 && age < SESSION_MAX_AGE_MS) || this.sql.exec('SELECT 1 FROM api_tokens WHERE token = ?', digest).toArray().length > 0;
+  }
+  private closeRevokedSessions() {
+    for (const ws of this.ctx.getWebSockets('browser')) if (!this.isValidDigest(ws.deserializeAttachment()?.sessionDigest ?? '')) ws.close(1008, 'Session expired or revoked');
+  }
+  private async revokeToken(token: string) {
+    const digest = await sessionDigest(token);
+    this.sql.exec('DELETE FROM auth_tokens WHERE token = ?', digest);
+    this.sql.exec('DELETE FROM api_tokens WHERE token = ?', digest);
+    this.closeRevokedSessions();
   }
 
   private getVmAgentVersion(vmId: string): string | null {
@@ -270,6 +291,7 @@ export class Hub extends DurableObject<Env> {
   private broadcast(msg: HubToBrowserMessage) {
     const payload = JSON.stringify(msg);
     for (const ws of this.ctx.getWebSockets('browser')) {
+      if (!this.isValidDigest(ws.deserializeAttachment()?.sessionDigest ?? '')) { ws.close(1008, 'Session expired or revoked'); continue; }
       try {
         ws.send(payload);
       } catch {
@@ -298,6 +320,7 @@ export class Hub extends DurableObject<Env> {
   // ---------- HTTP / upgrade entry ----------
 
   async fetch(request: Request): Promise<Response> {
+    if (!this.env.APP_PASSWORD || this.env.APP_PASSWORD.length < 24 || !this.env.HUB_AGENT_TOKEN || this.env.HUB_AGENT_TOKEN.length < 24) return json({ error: 'Hub authentication is not securely configured' }, 503);
     const url = new URL(request.url);
 
     if (url.pathname === '/agent') {
@@ -307,18 +330,22 @@ export class Hub extends DurableObject<Env> {
       return this.acceptSocket('agent');
     }
     if (url.pathname === '/ws') {
-      if (!this.isValidToken(url.searchParams.get('token') ?? '')) return new Response('Unauthorized', { status: 401 });
-      return this.acceptSocket('browser');
+      const protocols = (request.headers.get('sec-websocket-protocol') ?? '').split(',').map(v => v.trim());
+      const credential = protocols.find(v => v.startsWith('escanor.auth.'));
+      const token = credential ? credential.slice('escanor.auth.'.length) : url.searchParams.get('token') ?? '';
+      if (!await this.isValidToken(token)) return new Response('Unauthorized', { status: 401 });
+      return this.acceptSocket('browser', await sessionDigest(token), protocols.includes('escanor.hub.v1'));
     }
 
     if (request.method === 'OPTIONS') return new Response(null, { status: 204, headers: CORS });
     return this.handleApi(request, url);
   }
 
-  private acceptSocket(tag: 'agent' | 'browser'): Response {
+  private acceptSocket(tag: 'agent' | 'browser', digest?: string, browserProtocol = false): Response {
     const pair = new WebSocketPair();
     this.ctx.acceptWebSocket(pair[1], [tag]);
-    return new Response(null, { status: 101, webSocket: pair[0] });
+    if (digest) pair[1].serializeAttachment({ sessionDigest: digest });
+    return new Response(null, { status: 101, webSocket: pair[0], headers: browserProtocol ? { 'Sec-WebSocket-Protocol': 'escanor.hub.v1' } : {} });
   }
 
   // ---------- agent -> hub ----------
@@ -468,12 +495,12 @@ export class Hub extends DurableObject<Env> {
     if (method === 'POST' && path === '/login') {
       if ((body as any)?.password !== this.env.APP_PASSWORD) return json({ error: 'Invalid password' }, 401);
       const token = crypto.randomUUID() + crypto.randomUUID();
-      this.sql.exec('INSERT INTO auth_tokens (token, created_at) VALUES (?, ?)', token, this.now());
+      this.sql.exec('INSERT INTO auth_tokens (token, created_at) VALUES (?, ?)', await sessionDigest(token), this.now());
       return json({ token });
     }
 
     const header = request.headers.get('authorization') ?? '';
-    if (!this.isValidToken(header.startsWith('Bearer ') ? header.slice(7) : '')) return json({ error: 'Unauthorized' }, 401);
+    if (!await this.isValidToken(header.startsWith('Bearer ') ? header.slice(7) : '')) return json({ error: 'Unauthorized' }, 401);
 
     if (method === 'GET' && path === '/mcp-servers') {
       const overview: McpOverviewDto = {
@@ -497,7 +524,7 @@ export class Hub extends DurableObject<Env> {
 
     // ---- tokens (same behaviour as the Node hub) ----
     if (method === 'POST' && path === '/logout') {
-      this.revokeToken(header.startsWith('Bearer ') ? header.slice(7) : '');
+      await this.revokeToken(header.startsWith('Bearer ') ? header.slice(7) : '');
       return json({ ok: true });
     }
     if (method === 'POST' && path === '/tokens') {
@@ -508,7 +535,7 @@ export class Hub extends DurableObject<Env> {
         label,
         createdAt: this.now(),
       };
-      this.sql.exec('INSERT INTO api_tokens (id, token, label, created_at) VALUES (?, ?, ?, ?)', created.id, created.token, created.label, created.createdAt);
+      this.sql.exec('INSERT INTO api_tokens (id, token, label, created_at) VALUES (?, ?, ?, ?)', created.id, await sessionDigest(created.token), created.label, created.createdAt);
       return json(created, 201);
     }
     if (method === 'GET' && path === '/tokens') {
@@ -524,6 +551,7 @@ export class Hub extends DurableObject<Env> {
       const id = decodeURIComponent(tok[1]);
       const exists = this.sql.exec('SELECT 1 FROM api_tokens WHERE id = ?', id).toArray().length > 0;
       if (exists) this.sql.exec('DELETE FROM api_tokens WHERE id = ?', id);
+      this.closeRevokedSessions();
       return json({ ok: exists }, exists ? 200 : 404);
     }
 

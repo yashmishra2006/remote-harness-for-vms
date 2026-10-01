@@ -27,16 +27,22 @@ export function setToken(token: string | null): void {
 }
 
 async function request<T>(path: string, init?: RequestInit): Promise<T> {
-  const res = await fetch(`${getHubUrl()}/api${path}`, {
+  const requestToken = getToken();
+  const requestHub = getHubUrl();
+  const assertCurrentSession = () => {
+    if (getToken() !== requestToken || getHubUrl() !== requestHub) throw new Error('Session changed; response discarded');
+  };
+  const res = await fetch(`${requestHub}/api${path}`, {
     ...init,
     headers: {
       'content-type': 'application/json',
-      ...(getToken() ? { authorization: `Bearer ${getToken()}` } : {}),
+      ...(requestToken ? { authorization: `Bearer ${requestToken}` } : {}),
       ...init?.headers,
     },
   });
+  assertCurrentSession();
   if (res.status === 401) {
-    // On Escanor's hosted hub there is no password to type: the app fetches a fresh token from Escanor instead.
+    // Hosted hubs refresh through Escanor; preserve that flow for the current session.
     if (localStorage.getItem('rh_managed') === '1') {
       window.dispatchEvent(new Event('rh-managed-unauthorized'));
       throw new Error('Reconnecting to your hub…');
@@ -47,10 +53,13 @@ async function request<T>(path: string, init?: RequestInit): Promise<T> {
   }
   if (!res.ok) {
     const body = await res.json().catch(() => ({ error: res.statusText }));
+    assertCurrentSession();
     throw new Error(body.error || `Request failed: ${res.status}`);
   }
   if (res.status === 204) return undefined as T;
-  return res.json();
+  const result = await res.json();
+  assertCurrentSession();
+  return result;
 }
 
 export const api = {

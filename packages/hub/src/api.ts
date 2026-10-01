@@ -24,6 +24,7 @@ const passwordMatches = (given: unknown, expected: string) => {
 
 export function createApiRouter(db: Db, agentServer: AgentServer, browserServer: BrowserServer, appPassword: string) {
   const router = Router();
+  router.use((_req, res, next) => { res.set({ 'Cache-Control': 'no-store', 'X-Content-Type-Options': 'nosniff', 'Referrer-Policy': 'no-referrer' }); next(); });
 
   // Password login is the classic single-tenant hub's front door: it signs in to the default tenant.
   // Other tenants have no password; they hold API tokens issued by the admin API.
@@ -93,6 +94,7 @@ export function createApiRouter(db: Db, agentServer: AgentServer, browserServer:
   router.post('/logout', (req, res) => {
     const header = req.header('authorization') ?? '';
     T(res).revokeToken(header.startsWith('Bearer ') ? header.slice(7) : '');
+    browserServer.closeRevokedSessions();
     res.json({ ok: true });
   });
 
@@ -106,6 +108,7 @@ export function createApiRouter(db: Db, agentServer: AgentServer, browserServer:
   router.get('/tokens', (_req, res) => res.json(T(res).listApiTokens()));
   router.delete('/tokens/:id', (req, res) => {
     const removed = T(res).deleteApiToken(req.params.id);
+    browserServer.closeRevokedSessions();
     res.status(removed ? 200 : 404).json({ ok: removed });
   });
 

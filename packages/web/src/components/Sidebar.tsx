@@ -1,3 +1,4 @@
+import LegalLinks from './LegalLinks';
 import { useEffect, useMemo, useState } from 'react';
 import type { ClaudeAccount, SessionDto } from '@remote-harness/shared';
 import { useStore } from '../store';
@@ -199,6 +200,7 @@ export default function Sidebar({ className, onSelectSession }: { className: str
           </>
         )}
       </div>
+      <div className="px-3 pb-3"><LegalLinks /></div>
       {connecting && <ConnectMachineSheet onClose={() => setConnecting(false)} />}
     </div>
   );

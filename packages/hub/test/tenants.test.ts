@@ -15,7 +15,7 @@ async function startHub(env: Record<string, string>, dataDir: string) {
   const port = 19000 + Math.floor(Math.random() * 900);
   const proc: ChildProcess = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     cwd: new URL('..', import.meta.url).pathname,
-    env: { ...process.env, PORT: String(port), HUB_AGENT_TOKEN: 'legacy-agent', APP_PASSWORD: 'pw', DATA_DIR: dataDir, WEB_DIST: dataDir, ...env },
+    env: { ...process.env, PORT: String(port), HUB_AGENT_TOKEN: 'legacy-agent-secret-for-tests-only', APP_PASSWORD: 'password-for-tests-only-123456', DATA_DIR: dataDir, WEB_DIST: dataDir, ...env },
     stdio: 'ignore',
   });
   const url = `http://127.0.0.1:${port}`;
@@ -73,7 +73,7 @@ test('the admin API needs the admin token, and no tenant credential opens it', a
   assert.equal((await fetch(url, { headers: bearer('wrong') })).status, 401);
   assert.equal((await fetch(url, { headers: bearer(A.apiToken) })).status, 401, 'a tenant API token is not an admin token');
   assert.equal((await fetch(url, { headers: bearer(A.agentToken) })).status, 401, 'nor is an agent token');
-  assert.equal((await fetch(url, { headers: bearer('legacy-agent') })).status, 401);
+  assert.equal((await fetch(url, { headers: bearer('legacy-agent-secret-for-tests-only') })).status, 401);
   const list = await (await fetch(url, { headers: admin })).json();
   assert.deepEqual(list.map((t: any) => t.label).sort(), ['A', 'B']);
   assert.ok(!JSON.stringify(list).includes(A.agentToken), 'tokens are never listed');
@@ -101,7 +101,7 @@ test('tenant credentials are not interchangeable and mean nothing outside their 
 test('two tenants may use the same VM name and never see each other', async () => {
   const a = agent(hub.port, A.agentToken, 'workspace-vm');
   const b = agent(hub.port, B.agentToken, 'workspace-vm');
-  const d = agent(hub.port, 'legacy-agent', 'workspace-vm');
+  const d = agent(hub.port, 'legacy-agent-secret-for-tests-only', 'workspace-vm');
   await Promise.all([a.ready, b.ready, d.ready]);
   await settle();
 
@@ -112,7 +112,7 @@ test('two tenants may use the same VM name and never see each other', async () =
   assert.notEqual(av[0].id, bv[0].id, 'same name, different machines');
   assert.equal(av[0].connected && bv[0].connected, true);
 
-  const login = await (await fetch(`${hub.url}/api/login`, { method: 'POST', headers: json, body: JSON.stringify({ password: 'pw' }) })).json();
+  const login = await (await fetch(`${hub.url}/api/login`, { method: 'POST', headers: json, body: JSON.stringify({ password: 'password-for-tests-only-123456' }) })).json();
   const dv = await vmsOf(login.token);
   assert.equal(dv.length, 1, 'the classic password login is the default tenant, with only its own VM');
   assert.ok(![av[0].id, bv[0].id].includes(dv[0].id));
@@ -258,7 +258,7 @@ test('a hub database from before tenants becomes the default tenant, intact', as
     INSERT INTO vms VALUES ('vm-old', 'my-server', '2026-01-01T00:00:00Z', '[]');
     INSERT INTO sessions VALUES ('s-old', 'vm-old', '/home', 'old chat', '2026-01-01T00:00:00Z', '2026-01-01T00:00:00Z', 'idle', 'default');
     INSERT INTO messages (session_id, vm_id, payload, created_at) VALUES ('s-old', 'vm-old', '{"type":"assistant","text":"remembered"}', '2026-01-01T00:00:00Z');
-    INSERT INTO auth_tokens VALUES ('old-login-token', '2026-01-01T00:00:00Z');
+    INSERT INTO auth_tokens VALUES ('old-login-token', '${new Date().toISOString()}');
     INSERT INTO mcp_servers VALUES ('escanor', '{"name":"escanor","url":"https://mcp.escanor.in/","updatedAt":"x"}', 'x');
   `);
   old.close();
@@ -275,7 +275,7 @@ test('a hub database from before tenants becomes the default tenant, intact', as
     const mcp = await (await fetch(`${migrated.url}/api/mcp-servers`, { headers: legacy })).json();
     assert.equal(mcp.servers[0].name, 'escanor');
     // ...and the classic agent token still lands in the same tenant, with the same VM name.
-    const ag = agent(migrated.port, 'legacy-agent', 'my-server');
+    const ag = agent(migrated.port, 'legacy-agent-secret-for-tests-only', 'my-server');
     await ag.ready;
     await settle();
     const after = (await (await fetch(`${migrated.url}/api/vms`, { headers: legacy })).json()) as any[];

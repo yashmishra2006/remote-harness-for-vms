@@ -11,6 +11,8 @@ import type { AgentMcpStatus, ApiTokenDto, ClaudeAccount, ManagedMcpServer, Mess
 export const DEFAULT_TENANT = 'default';
 
 const sha256 = (s: string) => createHash('sha256').update(s).digest('hex');
+const sessionDigest = (s: string) => `sha256:${sha256(s)}`;
+const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
 const newSecret = () => randomBytes(32).toString('base64url');
 
 export type TenantDto = { id: string; label: string; createdAt: string };
@@ -156,6 +158,11 @@ export function openDb(dataDir: string) {
     `);
   }
   migrate(db);
+  for (const table of ['auth_tokens', 'api_tokens']) {
+    for (const row of db.prepare(`SELECT token FROM ${table}`).all() as { token: string }[]) {
+      if (!row.token.startsWith('sha256:')) db.prepare(`UPDATE ${table} SET token = ? WHERE token = ?`).run(sessionDigest(row.token), row.token);
+    }
+  }
   db.exec(`
     CREATE INDEX IF NOT EXISTS idx_messages_tenant_session ON messages(tenant_id, session_id, id);
     CREATE INDEX IF NOT EXISTS idx_sessions_vm ON sessions(tenant_id, vm_id);
@@ -273,14 +280,14 @@ export function openDb(dataDir: string) {
 
       createAuthToken(): string {
         const token = randomUUID() + randomUUID();
-        db.prepare('INSERT INTO auth_tokens (token, created_at, tenant_id) VALUES (?, ?, ?)').run(token, new Date().toISOString(), t);
+        db.prepare('INSERT INTO auth_tokens (token, created_at, tenant_id) VALUES (?, ?, ?)').run(sessionDigest(token), new Date().toISOString(), t);
         return token;
       },
 
       /** Sign out: the token stops working immediately, wherever it was copied to. */
       revokeToken(token: string): boolean {
-        const a = Number(db.prepare('DELETE FROM auth_tokens WHERE tenant_id = ? AND token = ?').run(t, token).changes);
-        const b = Number(db.prepare('DELETE FROM api_tokens WHERE tenant_id = ? AND token = ?').run(t, token).changes);
+        const a = Number(db.prepare('DELETE FROM auth_tokens WHERE tenant_id = ? AND token = ?').run(t, sessionDigest(token)).changes);
+        const b = Number(db.prepare('DELETE FROM api_tokens WHERE tenant_id = ? AND token = ?').run(t, sessionDigest(token)).changes);
         return a + b > 0;
       },
 
@@ -288,7 +295,7 @@ export function openDb(dataDir: string) {
         const created = { id: randomUUID(), token: randomUUID() + randomUUID(), label, createdAt: new Date().toISOString() };
         db.prepare('INSERT INTO api_tokens (id, token, label, created_at, tenant_id) VALUES (?, ?, ?, ?, ?)').run(
           created.id,
-          created.token,
+          sessionDigest(created.token),
           created.label,
           created.createdAt,
           t,
@@ -362,10 +369,12 @@ export function openDb(dataDir: string) {
     // ---- who does a credential belong to? ----
 
     tenantForApiToken(token: string): string | null {
-      if (!token) return null;
-      const a = db.prepare('SELECT tenant_id as t FROM auth_tokens WHERE token = ?').get(token) as { t: string } | undefined;
-      if (a) return a.t;
-      const b = db.prepare('SELECT tenant_id as t FROM api_tokens WHERE token = ?').get(token) as { t: string } | undefined;
+      if (!token || token.length > 512) return null;
+      const digest = sessionDigest(token);
+      const a = db.prepare('SELECT tenant_id as t, created_at FROM auth_tokens WHERE token = ?').get(digest) as { t: string; created_at: string } | undefined;
+      const age = a ? Date.now() - Date.parse(a.created_at) : NaN;
+      if (a && Number.isFinite(age) && age >= 0 && age < SESSION_MAX_AGE_MS) return a.t;
+      const b = db.prepare('SELECT tenant_id as t FROM api_tokens WHERE token = ?').get(digest) as { t: string } | undefined;
       return b?.t ?? null;
     },
 

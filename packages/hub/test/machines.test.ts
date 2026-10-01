@@ -27,7 +27,7 @@ before(async () => {
   port = 19000 + Math.floor(Math.random() * 900);
   proc = spawn(process.execPath, ['--import', 'tsx', 'src/index.ts'], {
     cwd: new URL('..', import.meta.url).pathname,
-    env: { ...process.env, PORT: String(port), HUB_AGENT_TOKEN: 'legacy-agent', APP_PASSWORD: 'pw', DATA_DIR: dir, WEB_DIST: dir, HUB_ADMIN_TOKEN: ADMIN, HUB_MACHINE_MIN_TTL_SECONDS: '1' },
+    env: { ...process.env, PORT: String(port), HUB_AGENT_TOKEN: 'legacy-agent-secret-for-tests-only', APP_PASSWORD: 'password-for-tests-only-123456', DATA_DIR: dir, WEB_DIST: dir, HUB_ADMIN_TOKEN: ADMIN, HUB_MACHINE_MIN_TTL_SECONDS: '1' },
     stdio: ['ignore', 'ignore', process.env.HUB_TEST_STDERR ? 'inherit' : 'ignore'],
   });
   url = `http://127.0.0.1:${port}`;
