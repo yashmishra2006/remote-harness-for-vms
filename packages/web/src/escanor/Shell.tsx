@@ -1,17 +1,19 @@
-import { Desktop, PencilSimpleLine, PlugsConnected, Trash, UserCircle, X, type Icon } from '@phosphor-icons/react';
+import { Desktop, Laptop, PencilSimpleLine, PlugsConnected, Trash, UserCircle, X, type Icon } from '@phosphor-icons/react';
 import { useCallback, useEffect, useState } from 'react';
 import AccountView from './AccountView';
 import AssistantView from './AssistantView';
+import ComputersView from './computer/ComputersView';
 import { escanor } from './client';
 import { useLoad } from './hooks';
 import IntegrationsView from './IntegrationsView';
 import { useEscanorSession } from './session';
 import { Logo, NavContext } from './ui';
 
-export type Tab = 'assistant' | 'connections' | 'machines' | 'account';
+export type Tab = 'assistant' | 'connections' | 'computers' | 'machines' | 'account';
 
 const PAGES: Array<{ id: Exclude<Tab, 'assistant'>; label: string; Icon: Icon }> = [
   { id: 'connections', label: 'Connections', Icon: PlugsConnected },
+  { id: 'computers', label: 'Computers', Icon: Laptop },
   { id: 'machines', label: 'Machines', Icon: Desktop },
   { id: 'account', label: 'Account', Icon: UserCircle },
 ];
@@ -128,6 +130,7 @@ export default function Shell({ machines }: { machines: React.ReactNode }) {
         <main className="safe-top min-h-0 min-w-0 flex-1">
           {screen('assistant', <AssistantView conversationId={conversationId} title={list.find((c) => c.id === conversationId)?.title} onConversation={setConversationId} onCreated={chats.reload} onOpenIntegrations={() => show('connections')} />)}
           {screen('connections', <IntegrationsView />)}
+          {screen('computers', <ComputersView />)}
           {screen('machines', machines)}
           {screen('account', <AccountView onOpenMachines={() => show('machines')} />)}
         </main>

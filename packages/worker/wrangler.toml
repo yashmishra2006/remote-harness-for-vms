@@ -21,3 +21,6 @@ new_sqlite_classes = ["Hub"]
 # Secrets (set with `wrangler secret put`):
 #   HUB_AGENT_TOKEN  shared secret the VM agents authenticate with
 #   APP_PASSWORD     password for the web / Android app login
+#   HUB_MCP_ALLOW_PRIVATE  optional dev-only: set to 1 to allow a loopback/private-network MCP server URL
+#   HUB_ALLOW_QUERY_TOKEN  optional: set to 1 to accept the legacy /ws?token= form (old app builds). Off by default: the
+#                          credential is then in the URL, where proxies and CDNs log it.

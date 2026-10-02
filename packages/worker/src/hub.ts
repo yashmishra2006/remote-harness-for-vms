@@ -6,6 +6,7 @@ import {
   type AgentMcpStatus,
   type ApiTokenCreatedDto,
   type ApiTokenDto,
+  type ApiTokenScope,
   type AgentToHubMessage,
   type ClaudeAccount,
   type HubToAgentMessage,
@@ -17,11 +18,35 @@ import {
   type MessageDto,
   type SessionDto,
 } from '@remote-harness/shared';
+import {
+  RateLimiter,
+  clampLimit,
+  isEffortLevel,
+  isIdString,
+  isPermissionBehavior,
+  isPermissionMode,
+  isWeakSecret,
+  parseAgentFrame,
+  parseNewSession,
+  parseUserInput,
+  redactSecrets,
+  safeEqual,
+} from '@remote-harness/shared/validate';
 import type { Env } from './index';
 
 const PROJECTS_REQUEST_TIMEOUT_MS = 5000;
 
 const SESSION_MAX_AGE_MS = 30 * 24 * 60 * 60 * 1000;
+const LOGIN_WINDOW_MS = 15 * 60 * 1000;
+const MAX_BODY_UNAUTHENTICATED = 16 * 1024;
+const MAX_BODY_AUTHENTICATED = 20 * 1024 * 1024;
+const DEFAULT_MESSAGE_LIMIT = 2000;
+const MAX_MESSAGE_LIMIT = 10_000;
+// A token minted for an integration is long-lived on purpose, but not forever.
+const DEFAULT_API_TOKEN_TTL_SECONDS = 365 * 24 * 60 * 60;
+const MIN_TOKEN_TTL_SECONDS = 60;
+const MAX_TOKEN_TTL_SECONDS = 2 * 365 * 24 * 60 * 60;
+const SWEEP_INTERVAL_MS = 60_000;
 async function sessionDigest(token: string): Promise<string> {
   const bytes = await crypto.subtle.digest('SHA-256', new TextEncoder().encode(token));
   return `sha256:${Array.from(new Uint8Array(bytes), (b) => b.toString(16).padStart(2, '0')).join('')}`;
@@ -36,6 +61,9 @@ const CORS = {
   'Referrer-Policy': 'no-referrer',
   'Access-Control-Allow-Headers': 'authorization, content-type',
   'Access-Control-Allow-Methods': 'GET, POST, PUT, DELETE, OPTIONS',
+  // Stops the approval card being framed (clickjacking) and blocks the markdown-image exfiltration channel.
+  'X-Frame-Options': 'DENY',
+  'Content-Security-Policy': "frame-ancestors 'none'; base-uri 'self'; object-src 'none'; form-action 'self'; img-src 'self' data: blob: https://*.googleusercontent.com",
 };
 
 function json(body: unknown, status = 200): Response {
@@ -54,6 +82,7 @@ function contentBlocks(text: string, images: ImageAttachment[] | undefined) {
 export class Hub extends DurableObject<Env> {
   private sql: SqlStorage;
   private pendingProjects = new Map<string, (projects: string[]) => void>();
+  private loginLimiter = new RateLimiter({ maxFailures: 10, windowMs: LOGIN_WINDOW_MS });
 
   constructor(ctx: DurableObjectState, env: Env) {
     super(ctx, env);
@@ -107,7 +136,17 @@ export class Hub extends DurableObject<Env> {
         status_json TEXT NOT NULL,
         reported_at TEXT NOT NULL
       );
+      -- A new chat starts under a temporary id and is re-keyed to Claude's real session id once it exists. The alias
+      -- lets a caller that only ever learned the temporary id keep using it (same contract as the Node hub).
+      CREATE TABLE IF NOT EXISTS session_aliases (
+        old_id TEXT PRIMARY KEY,
+        new_id TEXT NOT NULL
+      );
     `);
+    const cols = (this.sql.exec('PRAGMA table_info(api_tokens)').toArray() as { name: string }[]).map((c) => c.name);
+    if (!cols.includes('scope')) this.sql.exec("ALTER TABLE api_tokens ADD COLUMN scope TEXT NOT NULL DEFAULT 'full'");
+    // NULL = no expiry: tokens issued before expiry existed keep working until revoked.
+    if (!cols.includes('expires_at')) this.sql.exec('ALTER TABLE api_tokens ADD COLUMN expires_at TEXT');
     // Answered by the runtime without waking the object, so idle browser tabs stay connected cheaply.
     ctx.blockConcurrencyWhile(async () => {
       for (const table of ['auth_tokens', 'api_tokens']) {
@@ -156,7 +195,8 @@ export class Hub extends DurableObject<Env> {
     this.sql.exec(
       `INSERT INTO sessions (id, vm_id, cwd, title, created_at, last_message_at, status, account_id)
        VALUES (?, ?, ?, ?, ?, ?, ?, ?)
-       ON CONFLICT(id) DO UPDATE SET status = excluded.status, last_message_at = excluded.last_message_at`,
+       ON CONFLICT(id) DO UPDATE SET status = excluded.status, last_message_at = excluded.last_message_at
+       WHERE sessions.vm_id = excluded.vm_id`,
       s.id,
       s.vmId,
       s.cwd,
@@ -168,9 +208,22 @@ export class Hub extends DurableObject<Env> {
     );
   }
 
-  private touchSession(id: string, status?: string) {
-    if (status) this.sql.exec('UPDATE sessions SET last_message_at = ?, status = ? WHERE id = ?', this.now(), status, id);
-    else this.sql.exec('UPDATE sessions SET last_message_at = ? WHERE id = ?', this.now(), id);
+  // vmId scopes the update to the owning VM, so one agent can't touch another VM's session.
+  private touchSession(id: string, status: string | undefined, vmId: string) {
+    if (status) this.sql.exec('UPDATE sessions SET last_message_at = ?, status = ? WHERE id = ? AND vm_id = ?', this.now(), status, id, vmId);
+    else this.sql.exec('UPDATE sessions SET last_message_at = ? WHERE id = ? AND vm_id = ?', this.now(), id, vmId);
+  }
+
+  private rekeySession(oldId: string, newId: string, vmId: string) {
+    this.sql.exec('UPDATE messages SET session_id = ? WHERE session_id = ? AND vm_id = ?', newId, oldId, vmId);
+    if (oldId !== newId) {
+      this.sql.exec('INSERT INTO session_aliases (old_id, new_id) VALUES (?, ?) ON CONFLICT(old_id) DO UPDATE SET new_id = excluded.new_id', oldId, newId);
+    }
+  }
+
+  private resolveSession(id: string): string {
+    const row = this.sql.exec('SELECT new_id FROM session_aliases WHERE old_id = ?', id).toArray()[0] as { new_id: string } | undefined;
+    return row?.new_id ?? id;
   }
 
   private insertMessage(m: { sessionId: string; vmId: string; message: unknown }) {
@@ -178,14 +231,20 @@ export class Hub extends DurableObject<Env> {
       'INSERT INTO messages (session_id, vm_id, payload, created_at) VALUES (?, ?, ?, ?)',
       m.sessionId,
       m.vmId,
-      JSON.stringify(m.message),
+      JSON.stringify(redactSecrets(m.message)),
       this.now(),
     );
   }
 
-  private listMessages(sessionId: string): MessageDto[] {
+  // The most recent `limit` messages, oldest first, scoped to the VM.
+  private listMessages(sessionId: string, vmId: string, limit: number): MessageDto[] {
     const rows = this.sql
-      .exec('SELECT id, session_id, vm_id, payload, created_at FROM messages WHERE session_id = ? ORDER BY id ASC', sessionId)
+      .exec(
+        `SELECT id, session_id, vm_id, payload, created_at FROM (
+           SELECT * FROM messages WHERE session_id = ? AND vm_id = ? ORDER BY id DESC LIMIT ?
+         ) ORDER BY id ASC`,
+        sessionId, vmId, limit,
+      )
       .toArray() as { id: number; session_id: string; vm_id: string; payload: string; created_at: string }[];
     return rows.map((r) => ({
       id: r.id,
@@ -244,22 +303,36 @@ export class Hub extends DurableObject<Env> {
     }
   }
 
-  private async isValidToken(token: string): Promise<boolean> {
-    return Boolean(token) && token.length <= 512 && this.isValidDigest(await sessionDigest(token));
+  /** What a bearer token is and may do, or null when it is unknown, expired or revoked. */
+  private credentialForDigest(digest: string): { kind: 'login' | 'api'; scope: ApiTokenScope } | null {
+    const a = this.sql.exec('SELECT created_at FROM auth_tokens WHERE token = ?', digest).toArray()[0] as { created_at: string } | undefined;
+    const age = a ? Date.now() - Date.parse(a.created_at) : NaN;
+    if (Number.isFinite(age) && age >= 0 && age < SESSION_MAX_AGE_MS) return { kind: 'login', scope: 'full' };
+    const b = this.sql.exec('SELECT scope, expires_at FROM api_tokens WHERE token = ?', digest).toArray()[0] as { scope: string; expires_at: string | null } | undefined;
+    if (!b || (b.expires_at && b.expires_at <= this.now())) return null;
+    return { kind: 'api', scope: b.scope === 'mcp' ? 'mcp' : 'full' };
   }
-  private isValidDigest(digest: string): boolean {
-    const row = this.sql.exec('SELECT created_at FROM auth_tokens WHERE token = ?', digest).toArray()[0] as { created_at: string } | undefined;
-    const age = row ? Date.now() - Date.parse(row.created_at) : NaN;
-    return (Number.isFinite(age) && age >= 0 && age < SESSION_MAX_AGE_MS) || this.sql.exec('SELECT 1 FROM api_tokens WHERE token = ?', digest).toArray().length > 0;
+  private async credentialFor(token: string) {
+    return token && token.length <= 512 ? this.credentialForDigest(await sessionDigest(token)) : null;
+  }
+  // A token limited to MCP management has no business receiving every transcript the hub broadcasts.
+  private isStreamable(digest: string): boolean {
+    return this.credentialForDigest(digest)?.scope === 'full';
   }
   private closeRevokedSessions() {
-    for (const ws of this.ctx.getWebSockets('browser')) if (!this.isValidDigest(ws.deserializeAttachment()?.sessionDigest ?? '')) ws.close(1008, 'Session expired or revoked');
+    for (const ws of this.ctx.getWebSockets('browser')) if (!this.isStreamable(ws.deserializeAttachment()?.sessionDigest ?? '')) ws.close(1008, 'Session expired or revoked');
   }
   private async revokeToken(token: string) {
     const digest = await sessionDigest(token);
     this.sql.exec('DELETE FROM auth_tokens WHERE token = ?', digest);
     this.sql.exec('DELETE FROM api_tokens WHERE token = ?', digest);
     this.closeRevokedSessions();
+  }
+
+  // Close sockets whose session expired even when nothing is being broadcast to them.
+  async alarm(): Promise<void> {
+    this.closeRevokedSessions();
+    if (this.ctx.getWebSockets('browser').length > 0) await this.ctx.storage.setAlarm(Date.now() + SWEEP_INTERVAL_MS);
   }
 
   private getVmAgentVersion(vmId: string): string | null {
@@ -291,7 +364,7 @@ export class Hub extends DurableObject<Env> {
   private broadcast(msg: HubToBrowserMessage) {
     const payload = JSON.stringify(msg);
     for (const ws of this.ctx.getWebSockets('browser')) {
-      if (!this.isValidDigest(ws.deserializeAttachment()?.sessionDigest ?? '')) { ws.close(1008, 'Session expired or revoked'); continue; }
+      if (!this.isStreamable(ws.deserializeAttachment()?.sessionDigest ?? '')) { ws.close(1008, 'Session expired or revoked'); continue; }
       try {
         ws.send(payload);
       } catch {
@@ -320,11 +393,12 @@ export class Hub extends DurableObject<Env> {
   // ---------- HTTP / upgrade entry ----------
 
   async fetch(request: Request): Promise<Response> {
-    if (!this.env.APP_PASSWORD || this.env.APP_PASSWORD.length < 24 || !this.env.HUB_AGENT_TOKEN || this.env.HUB_AGENT_TOKEN.length < 24) return json({ error: 'Hub authentication is not securely configured' }, 503);
+    // Fail closed: an unset, short or placeholder secret must never be satisfiable (`Bearer undefined`, an empty password).
+    if (isWeakSecret(this.env.APP_PASSWORD) || isWeakSecret(this.env.HUB_AGENT_TOKEN)) return json({ error: 'Hub authentication is not securely configured' }, 503);
     const url = new URL(request.url);
 
     if (url.pathname === '/agent') {
-      if (request.headers.get('authorization') !== `Bearer ${this.env.HUB_AGENT_TOKEN}`) {
+      if (!safeEqual(request.headers.get('authorization'), `Bearer ${this.env.HUB_AGENT_TOKEN}`)) {
         return new Response('Unauthorized', { status: 401 });
       }
       return this.acceptSocket('agent');
@@ -332,8 +406,11 @@ export class Hub extends DurableObject<Env> {
     if (url.pathname === '/ws') {
       const protocols = (request.headers.get('sec-websocket-protocol') ?? '').split(',').map(v => v.trim());
       const credential = protocols.find(v => v.startsWith('escanor.auth.'));
-      const token = credential ? credential.slice('escanor.auth.'.length) : url.searchParams.get('token') ?? '';
-      if (!await this.isValidToken(token)) return new Response('Unauthorized', { status: 401 });
+      // The ?token= form puts the credential in the URL, where proxies and CDNs log it: only when the operator re-enables it.
+      const token = credential ? credential.slice('escanor.auth.'.length) : this.env.HUB_ALLOW_QUERY_TOKEN === '1' ? url.searchParams.get('token') ?? '' : '';
+      const cred = await this.credentialFor(token);
+      if (!cred || cred.scope !== 'full') return new Response('Unauthorized', { status: 401 });
+      void this.ctx.storage.getAlarm().then((at) => (at ? undefined : this.ctx.storage.setAlarm(Date.now() + SWEEP_INTERVAL_MS)));
       return this.acceptSocket('browser', await sessionDigest(token), protocols.includes('escanor.hub.v1'));
     }
 
@@ -352,16 +429,25 @@ export class Hub extends DurableObject<Env> {
 
   async webSocketMessage(ws: WebSocket, data: string | ArrayBuffer): Promise<void> {
     if (!this.ctx.getTags(ws).includes('agent')) return; // browsers only send pings (auto-answered)
-    let msg: AgentToHubMessage;
+    const msg = parseAgentFrame(typeof data === 'string' ? data : new TextDecoder().decode(data));
+    if (!msg) return; // not JSON, not an object, or not a frame we know
     try {
-      msg = JSON.parse(typeof data === 'string' ? data : new TextDecoder().decode(data));
-    } catch {
-      return;
+      this.handleAgentFrame(ws, msg);
+    } catch (err) {
+      // One bad frame (or a storage failure) must not take the hub down.
+      console.error('[agent] dropped frame after handler error:', err);
     }
+  }
 
+  private handleAgentFrame(ws: WebSocket, msg: AgentToHubMessage): void {
     const att = (ws.deserializeAttachment() ?? {}) as AgentAttachment;
 
     if (msg.type === 'hello') {
+      // One socket speaks for exactly one VM.
+      if (att.vmName && att.vmName !== msg.vmName) {
+        ws.close(1008, 'hello identity changed');
+        return;
+      }
       const vmId = this.upsertVm(msg.vmName);
       for (const other of this.agentSockets()) {
         if (other.ws !== ws && other.att.vmId === vmId) other.ws.close(1000, 'replaced by newer connection');
@@ -402,11 +488,11 @@ export class Hub extends DurableObject<Env> {
         break;
       case 'sdk_message':
         this.insertMessage({ sessionId: msg.sessionId, vmId, message: msg.message });
-        this.touchSession(msg.sessionId, 'active');
+        this.touchSession(msg.sessionId, 'active', vmId);
         this.broadcast({ type: 'sdk_message', vmId, sessionId: msg.sessionId, tempId: msg.tempId, message: msg.message, createdAt: now });
         break;
       case 'session_created':
-        this.sql.exec('UPDATE messages SET session_id = ? WHERE session_id = ?', msg.sessionId, msg.tempId);
+        this.rekeySession(msg.tempId, msg.sessionId, vmId);
         this.upsertSession({ id: msg.sessionId, vmId, cwd: msg.cwd, title: msg.title, status: 'active', accountId: msg.accountId });
         this.broadcast({
           type: 'session_created',
@@ -419,7 +505,7 @@ export class Hub extends DurableObject<Env> {
         });
         break;
       case 'session_ended':
-        this.touchSession(msg.sessionId, 'idle');
+        this.touchSession(msg.sessionId, 'idle', vmId);
         this.broadcast({ type: 'session_ended', vmId, sessionId: msg.sessionId });
         break;
       case 'permission_request':
@@ -487,20 +573,80 @@ export class Hub extends DurableObject<Env> {
 
   // ---------- REST API ----------
 
+  // Reads a JSON body with a hard size cap (Content-Length is advisory, so the text length is checked too).
+  private async readJson(request: Request, limit: number): Promise<{ ok: true; body: unknown } | { ok: false; res: Response }> {
+    const declared = Number(request.headers.get('content-length') ?? 0);
+    if (declared > limit) {
+      await request.body?.cancel().catch(() => undefined);
+      return { ok: false, res: json({ error: 'Request body too large' }, 413) };
+    }
+    const text = await request.text();
+    if (text.length > limit) return { ok: false, res: json({ error: 'Request body too large' }, 413) };
+    try {
+      return { ok: true, body: text ? JSON.parse(text) : {} };
+    } catch {
+      return { ok: false, res: json({ error: 'Bad request' }, 400) };
+    }
+  }
+
   private async handleApi(request: Request, url: URL): Promise<Response> {
     const path = url.pathname.replace(/^\/api/, '');
     const method = request.method;
-    const body = method === 'POST' || method === 'PUT' ? await request.json().catch(() => ({})) : {};
 
+    // ---- unauthenticated: a tiny body, and rate limited ----
     if (method === 'POST' && path === '/login') {
-      if ((body as any)?.password !== this.env.APP_PASSWORD) return json({ error: 'Invalid password' }, 401);
+      // Cloudflare sets CF-Connecting-IP itself, so unlike X-Forwarded-For a client cannot spoof it.
+      const key = request.headers.get('cf-connecting-ip') ?? 'unknown';
+      if (this.loginLimiter.blocked(key)) {
+        return new Response(JSON.stringify({ error: 'Too many failed sign-in attempts. Try again later.' }), {
+          status: 429,
+          headers: { 'content-type': 'application/json', 'Retry-After': String(LOGIN_WINDOW_MS / 1000), ...CORS },
+        });
+      }
+      const parsed = await this.readJson(request, MAX_BODY_UNAUTHENTICATED);
+      if (!parsed.ok) return parsed.res;
+      if (!safeEqual((parsed.body as any)?.password, this.env.APP_PASSWORD)) {
+        this.loginLimiter.fail(key);
+        return json({ error: 'Invalid password' }, 401);
+      }
+      this.loginLimiter.succeed(key);
       const token = crypto.randomUUID() + crypto.randomUUID();
       this.sql.exec('INSERT INTO auth_tokens (token, created_at) VALUES (?, ?)', await sessionDigest(token), this.now());
       return json({ token });
     }
 
+    // ---- everything else needs a valid credential before any body is read ----
     const header = request.headers.get('authorization') ?? '';
-    if (!await this.isValidToken(header.startsWith('Bearer ') ? header.slice(7) : '')) return json({ error: 'Unauthorized' }, 401);
+    const bearerToken = header.startsWith('Bearer ') ? header.slice(7) : '';
+    const cred = await this.credentialFor(bearerToken);
+    if (!cred) {
+      // Never read an unauthenticated body, but do release it: answering while a large upload is still streaming in makes the runtime fail the request.
+      await request.body?.cancel().catch(() => undefined);
+      return json({ error: 'Unauthorized' }, 401);
+    }
+
+    // A token issued for MCP management (what Escanor gets) can manage the MCP registry and nothing else: it cannot start sessions,
+    // answer permission cards or change a permission mode. A leak of it must not be code execution on every VM.
+    if (cred.scope === 'mcp' && !(path === '/mcp-servers' || path.startsWith('/mcp-servers/'))) {
+      await request.body?.cancel().catch(() => undefined);
+      return json({ error: 'This token is limited to managing MCP servers.' }, 403);
+    }
+
+    let body: unknown = {};
+    if (method === 'POST' || method === 'PUT') {
+      const parsed = await this.readJson(request, MAX_BODY_AUTHENTICATED);
+      if (!parsed.ok) return parsed.res;
+      body = parsed.body;
+    }
+
+    // %-escapes in a path segment are untrusted input: a malformed one is a bad request, not a 500.
+    const decode = (v: string): string | null => {
+      try {
+        return decodeURIComponent(v);
+      } catch {
+        return null;
+      }
+    };
 
     if (method === 'GET' && path === '/mcp-servers') {
       const overview: McpOverviewDto = {
@@ -524,31 +670,47 @@ export class Hub extends DurableObject<Env> {
 
     // ---- tokens (same behaviour as the Node hub) ----
     if (method === 'POST' && path === '/logout') {
-      await this.revokeToken(header.startsWith('Bearer ') ? header.slice(7) : '');
+      await this.revokeToken(bearerToken);
       return json({ ok: true });
     }
     if (method === 'POST' && path === '/tokens') {
-      const label = String((body as any)?.label ?? '').trim().slice(0, 60) || 'API token';
+      // Only a signed-in browser session can mint one: a token that could mint more would let a leaked integration token keep
+      // itself alive forever.
+      if (cred.kind !== 'login') return json({ error: 'Only a signed-in session can create tokens.' }, 403);
+      const b = (body ?? {}) as { label?: unknown; scope?: unknown; ttlSeconds?: unknown };
+      const label = String(b.label ?? '').trim().slice(0, 60) || 'API token';
+      const scope = b.scope ?? 'full';
+      if (scope !== 'full' && scope !== 'mcp') return json({ error: 'scope must be "full" or "mcp"' }, 400);
+      const ttl = b.ttlSeconds;
+      if (ttl !== undefined && (typeof ttl !== 'number' || !Number.isFinite(ttl) || ttl < MIN_TOKEN_TTL_SECONDS || ttl > MAX_TOKEN_TTL_SECONDS)) {
+        return json({ error: `ttlSeconds must be between ${MIN_TOKEN_TTL_SECONDS} and ${MAX_TOKEN_TTL_SECONDS}` }, 400);
+      }
+      const expiresAt = new Date(Date.now() + (ttl ?? DEFAULT_API_TOKEN_TTL_SECONDS) * 1000).toISOString();
       const created: ApiTokenCreatedDto = {
         id: crypto.randomUUID(),
         token: crypto.randomUUID() + crypto.randomUUID(),
         label,
         createdAt: this.now(),
+        scope: scope as ApiTokenScope,
+        expiresAt,
       };
-      this.sql.exec('INSERT INTO api_tokens (id, token, label, created_at) VALUES (?, ?, ?, ?)', created.id, await sessionDigest(created.token), created.label, created.createdAt);
+      this.sql.exec('INSERT INTO api_tokens (id, token, label, created_at, scope, expires_at) VALUES (?, ?, ?, ?, ?, ?)', created.id, await sessionDigest(created.token), created.label, created.createdAt, scope, expiresAt);
       return json(created, 201);
     }
     if (method === 'GET' && path === '/tokens') {
-      const rows = this.sql.exec('SELECT id, label, created_at FROM api_tokens ORDER BY created_at DESC').toArray() as {
+      const rows = this.sql.exec('SELECT id, label, created_at, scope, expires_at FROM api_tokens ORDER BY created_at DESC').toArray() as {
         id: string;
         label: string;
         created_at: string;
+        scope: string;
+        expires_at: string | null;
       }[];
-      return json(rows.map((r): ApiTokenDto => ({ id: r.id, label: r.label, createdAt: r.created_at })));
+      return json(rows.map((r): ApiTokenDto => ({ id: r.id, label: r.label, createdAt: r.created_at, scope: r.scope === 'mcp' ? 'mcp' : 'full', expiresAt: r.expires_at })));
     }
     let tok: RegExpMatchArray | null;
     if (method === 'DELETE' && (tok = path.match(/^\/tokens\/([^/]+)$/))) {
-      const id = decodeURIComponent(tok[1]);
+      const id = decode(tok[1]);
+      if (id === null) return json({ error: 'Bad request' }, 400);
       const exists = this.sql.exec('SELECT 1 FROM api_tokens WHERE id = ?', id).toArray().length > 0;
       if (exists) this.sql.exec('DELETE FROM api_tokens WHERE id = ?', id);
       this.closeRevokedSessions();
@@ -557,9 +719,11 @@ export class Hub extends DurableObject<Env> {
 
     let mcp: RegExpMatchArray | null;
     if ((mcp = path.match(/^\/mcp-servers\/([^/]+)$/))) {
-      const name = decodeURIComponent(mcp[1]);
+      const name = decode(mcp[1]);
+      if (name === null) return json({ error: 'Bad request' }, 400);
       if (method === 'PUT') {
-        const parsed = parseMcpServerInput(name, body);
+        const existing = this.listMcpServers().find((x) => x.name === name);
+        const parsed = parseMcpServerInput(name, body, { existing, allowPrivate: this.env.HUB_MCP_ALLOW_PRIVATE === '1' });
         if (!parsed.ok) return json({ error: parsed.error }, 400);
         const server = this.putMcpServer(parsed.server);
         this.pushMcpServers();
@@ -617,51 +781,67 @@ export class Hub extends DurableObject<Env> {
     }
 
     if (method === 'GET' && (m = path.match(/^\/vms\/([^/]+)\/sessions\/([^/]+)\/messages$/))) {
-      return json(this.listMessages(m[2]));
+      const limit = clampLimit(url.searchParams.get('limit') ?? undefined, DEFAULT_MESSAGE_LIMIT, MAX_MESSAGE_LIMIT);
+      return json(this.listMessages(this.resolveSession(m[2]), m[1], limit));
     }
+
+    // Refuse before storing or broadcasting anything, so an offline VM can't leave a message in the history that was never delivered.
+    const notConnected = (vmId: string) => (this.agentFor(vmId) ? null : json({ error: 'VM not connected' }, 503));
+    const userMessage = (text: string, images: ImageAttachment[] | undefined) => ({ type: 'user', local: true, message: { role: 'user', content: contentBlocks(text, images) } });
 
     if (method === 'POST' && (m = path.match(/^\/vms\/([^/]+)\/sessions$/))) {
       const vmId = m[1];
-      const { cwd, text, images, accountId } = body as any;
-      if (!text && !(images?.length > 0)) return json({ error: 'text or images required' }, 400);
+      const parsed = parseNewSession(body);
+      if (!parsed.ok) return json({ error: parsed.error }, 400);
+      const offline = notConnected(vmId);
+      if (offline) return offline;
+      const { text, images, cwd, accountId } = parsed.value;
       const tempId = crypto.randomUUID();
-      const localMessage = { type: 'user', local: true, message: { role: 'user', content: contentBlocks(text ?? '', images) } };
+      const localMessage = userMessage(text, images);
       this.insertMessage({ sessionId: tempId, vmId, message: localMessage });
       this.broadcast({ type: 'sdk_message', vmId, sessionId: tempId, message: localMessage, createdAt: this.now() });
-      const delivered = this.sendToVm(vmId, { type: 'user_input', sessionId: tempId, tempId, cwd, accountId, text: text ?? '', images });
+      const delivered = this.sendToVm(vmId, { type: 'user_input', sessionId: tempId, tempId, cwd, accountId, text, images });
       if (!delivered) return json({ error: 'VM not connected' }, 503);
       return json({ tempId }, 202);
     }
 
     if ((m = path.match(/^\/vms\/([^/]+)\/sessions\/([^/]+)\/([a-z-]+)$/)) && method === 'POST') {
-      const [, vmId, sessionId, action] = m;
-      const b = body as any;
+      const vmId = m[1];
+      const sessionId = this.resolveSession(m[2]);
+      const action = m[3];
+      const b = (body ?? {}) as any;
       switch (action) {
         case 'messages': {
-          if (!b.text && !(b.images?.length > 0)) return json({ error: 'text or images required' }, 400);
-          const localMessage = { type: 'user', local: true, message: { role: 'user', content: contentBlocks(b.text ?? '', b.images) } };
+          const parsed = parseUserInput(body);
+          if (!parsed.ok) return json({ error: parsed.error }, 400);
+          const offline = notConnected(vmId);
+          if (offline) return offline;
+          const { text, images } = parsed.value;
+          const localMessage = userMessage(text, images);
           this.insertMessage({ sessionId, vmId, message: localMessage });
-          this.touchSession(sessionId, 'active');
+          this.touchSession(sessionId, 'active', vmId);
           this.broadcast({ type: 'sdk_message', vmId, sessionId, message: localMessage, createdAt: this.now() });
-          const delivered = this.sendToVm(vmId, { type: 'user_input', sessionId, text: b.text ?? '', images: b.images });
+          const delivered = this.sendToVm(vmId, { type: 'user_input', sessionId, text, images });
           return delivered ? json({ ok: true }, 202) : json({ error: 'VM not connected' }, 503);
         }
         case 'interrupt':
           return this.deliver(this.sendToVm(vmId, { type: 'interrupt', sessionId }));
         case 'model':
+          if (b.model !== undefined && b.model !== null && (typeof b.model !== 'string' || b.model.length > 200)) return json({ error: 'model must be a string' }, 400);
           return this.deliver(this.sendToVm(vmId, { type: 'set_model', sessionId, model: b.model || undefined }));
         case 'effort':
+          if (b.effort !== undefined && b.effort !== null && b.effort !== '' && !isEffortLevel(b.effort)) return json({ error: 'invalid effort level' }, 400);
           return this.deliver(this.sendToVm(vmId, { type: 'set_effort', sessionId, effort: b.effort || null }));
         case 'permission-mode':
+          if (!isPermissionMode(b.mode)) return json({ error: 'invalid permission mode' }, 400);
           return this.deliver(this.sendToVm(vmId, { type: 'set_permission_mode', sessionId, mode: b.mode }));
         case 'permission-response': {
-          const delivered = this.sendToVm(vmId, {
-            type: 'permission_response',
-            requestId: b.requestId,
-            behavior: b.behavior,
-            message: b.message,
-          });
-          this.broadcast({ type: 'permission_resolved', vmId, sessionId, requestId: b.requestId });
+          if (!isIdString(b.requestId) || !isPermissionBehavior(b.behavior) || (b.message !== undefined && (typeof b.message !== 'string' || b.message.length > 4000))) {
+            return json({ error: 'requestId and behavior (allow|deny) required' }, 400);
+          }
+          const delivered = this.sendToVm(vmId, { type: 'permission_response', requestId: b.requestId, behavior: b.behavior, message: b.message });
+          // Only announce "resolved" if the agent actually received the answer.
+          if (delivered) this.broadcast({ type: 'permission_resolved', vmId, sessionId, requestId: b.requestId });
           return this.deliver(delivered);
         }
       }

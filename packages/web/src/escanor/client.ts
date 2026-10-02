@@ -178,6 +178,19 @@ export const escanor = {
   integrationAuthorizeUrl: (providerId: string) => request<{ authorization_url: string }>(`/auth/integrations/${enc(providerId)}/authorize?platform=mobile`).then((r) => r.authorization_url),
   disconnect: (providerId: string) => request<{ disconnected: boolean }>(`/auth/integrations/${enc(providerId)}`, { method: 'DELETE' }),
 
+  // -- Escanor Desktop: a sealed (end-to-end encrypted) command for one of the person's own computers, answered when it next polls.
+  async sendToComputer(agentId: string, deviceId: string, sealed: string): Promise<string> {
+    type Cmd = { id: string; status: string; result?: { sealed?: string }; error?: string | null };
+    let cmd = await request<Cmd>('/agents/commands', json({ agent_id: agentId, plugin: 'desktop', action: 'sealed', parameters: { dev: deviceId, sealed }, approve_immediately: true, wait_for_result: true }));
+    const until = Date.now() + 120_000;
+    while (cmd.status !== 'succeeded' && cmd.status !== 'failed' && cmd.status !== 'cancelled' && Date.now() < until) {
+      await new Promise((r) => setTimeout(r, 1200));
+      cmd = await request<Cmd>(`/agents/commands/${enc(cmd.id)}`);
+    }
+    if (cmd.status !== 'succeeded' || !cmd.result?.sealed) throw new Error(cmd.status === 'failed' ? (cmd.error ?? 'The computer refused that.') : 'The computer did not answer. Is it on and online?');
+    return cmd.result.sealed;
+  },
+
   // -- other AI apps
   mcpConnections: () => request<McpConnection[]>('/agent/mcp/connections'),
   createMcpInstall: (name: string) => request<McpInstall>('/agent/mcp/install', json({ name })),
