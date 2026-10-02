@@ -66,7 +66,8 @@ export const api = {
   login: (password: string) => request<{ token: string }>('/login', { method: 'POST', body: JSON.stringify({ password }) }),
   logout: () => request<{ ok: boolean }>('/logout', { method: 'POST' }),
   listApiTokens: () => request<ApiTokenDto[]>('/tokens'),
-  createApiToken: (label: string) => request<ApiTokenCreatedDto>('/tokens', { method: 'POST', body: JSON.stringify({ label }) }),
+  // scope 'mcp' limits the token to managing MCP servers (what Escanor needs); it cannot start sessions or answer permission cards.
+  createApiToken: (label: string, scope: 'full' | 'mcp' = 'full') => request<ApiTokenCreatedDto>('/tokens', { method: 'POST', body: JSON.stringify({ label, scope }) }),
   deleteApiToken: (id: string) => request<{ ok: boolean }>(`/tokens/${encodeURIComponent(id)}`, { method: 'DELETE' }),
   listVms: () => request<VmDto[]>('/vms'),
   getMcpOverview: () => request<McpOverviewDto>('/mcp-servers'),

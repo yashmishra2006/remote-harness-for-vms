@@ -6,10 +6,10 @@ const config: CapacitorConfig = {
   webDir: 'dist',
   backgroundColor: '#050505',
   server: {
-    // http scheme + cleartext so the app can talk to either an http:// or https:// hub
-    // without the webview blocking it as mixed content.
-    androidScheme: 'http',
-    cleartext: true,
+    // https only: the hub token and every message travel over this connection, so plaintext hubs are refused
+    // (use an https/wss hub, e.g. behind Cloudflare or a TLS proxy).
+    androidScheme: 'https',
+    cleartext: false,
   },
 };
 

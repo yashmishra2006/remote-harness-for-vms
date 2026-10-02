@@ -1,7 +1,5 @@
 import { createContext, useContext, useEffect, useState, type ReactNode } from 'react';
-import ReactMarkdown from 'react-markdown';
-import remarkGfm from 'remark-gfm';
-import rehypeHighlight from 'rehype-highlight';
+import { SafeMarkdown } from './SafeMarkdown';
 import type { DisplayItem, Block, ToolItem, Todo } from '../groupMessages';
 import { useStore } from '../store';
 import { diffLines, diffStat } from '../diff';
@@ -129,9 +127,7 @@ function Expandable({ text, error, limit = 3 }: { text: string; error?: boolean;
 function Markdown({ text }: { text: string }) {
   return (
     <div className="markdown min-w-0 flex-1 [overflow-wrap:anywhere] text-[14px] leading-relaxed text-ink">
-      <ReactMarkdown remarkPlugins={[remarkGfm]} rehypePlugins={[rehypeHighlight]}>
-        {text}
-      </ReactMarkdown>
+      <SafeMarkdown text={text} />
     </div>
   );
 }

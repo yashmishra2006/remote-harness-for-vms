@@ -103,7 +103,8 @@ function TokenSection() {
     setBusy(true);
     setError(null);
     try {
-      setCreated(await api.createApiToken('Escanor'));
+      // Escanor only installs and reads MCP servers, so it gets a token that can do exactly that.
+      setCreated(await api.createApiToken('Escanor', 'mcp'));
       await load();
     } catch (err) {
       setError(err instanceof Error ? err.message : 'Could not create a token');

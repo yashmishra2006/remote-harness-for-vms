@@ -4,6 +4,16 @@ import React, { createContext, useCallback, useContext, useEffect, useMemo, useR
 import { isNative } from '../api';
 import { APP_SCHEME, loginRedirect } from './config';
 import { ApiError, escanor, hasStoredSession, SessionEnded, type EscanorUser } from './client';
+import { createPkcePair } from './pkce';
+
+// Kept in both stores: the native app can be killed while the system browser is open for Google.
+const PKCE_KEY = 'rh_escanor_pkce_verifier';
+const takeVerifier = (): string | undefined => {
+  const v = sessionStorage.getItem(PKCE_KEY) ?? localStorage.getItem(PKCE_KEY) ?? undefined;
+  sessionStorage.removeItem(PKCE_KEY);
+  localStorage.removeItem(PKCE_KEY);
+  return v;
+};
 
 type Status = 'loading' | 'signed_out' | 'signed_in';
 
@@ -62,7 +72,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
       handled.current.add(code);
       setBusy(true);
       try {
-        await escanor.exchangeCode(code);
+        await escanor.exchangeCode(code, takeVerifier());
         await load();
       } catch (e) {
         setStatus('signed_out');
@@ -112,7 +122,14 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         setError(null);
         setBusy(true);
         try {
-          const url = await escanor.authorizeUrl(redirect.uri, isNative() ? 'mobile' : 'web');
+          // null on a plain-http page (Web Crypto's digest needs a secure context); the backend still accepts a login without a
+          // challenge unless the operator has made PKCE mandatory.
+          const pkce = await createPkcePair();
+          if (pkce) {
+            sessionStorage.setItem(PKCE_KEY, pkce.verifier);
+            localStorage.setItem(PKCE_KEY, pkce.verifier);
+          }
+          const url = await escanor.authorizeUrl(redirect.uri, isNative() ? 'mobile' : 'web', pkce?.challenge);
           if (isNative()) await Browser.open({ url });
           else window.location.assign(url);
         } catch (e) {
@@ -122,6 +139,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         }
       },
       async signOut() {
+        takeVerifier();
         await escanor.signOut();
         setUser(null);
         setStatus('signed_out');

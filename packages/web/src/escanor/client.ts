@@ -134,12 +134,15 @@ const enc = encodeURIComponent;
 
 export const escanor = {
   // -- session
-  async authorizeUrl(redirectUri: string, platform: 'web' | 'mobile'): Promise<string> {
-    const r = await request<{ authorization_url: string }>(`/auth/oauth/google/authorize?platform=${platform}&redirect_uri=${enc(redirectUri)}`, {}, { auth: false });
+  // `codeChallenge` (PKCE, S256) binds the login code to this app instance: on Android the code comes back through a custom-scheme
+  // link that any installed app can also register, and without the verifier an app that intercepts the code cannot redeem it.
+  async authorizeUrl(redirectUri: string, platform: 'web' | 'mobile', codeChallenge?: string): Promise<string> {
+    const pkce = codeChallenge ? `&code_challenge=${enc(codeChallenge)}&code_challenge_method=S256` : '';
+    const r = await request<{ authorization_url: string }>(`/auth/oauth/google/authorize?platform=${platform}&redirect_uri=${enc(redirectUri)}${pkce}`, {}, { auth: false });
     return r.authorization_url;
   },
-  async exchangeCode(code: string): Promise<void> {
-    const t = await request<{ access_token: string; refresh_token: string }>('/auth/oauth/exchange', json({ code, provider: 'google' }), { auth: false });
+  async exchangeCode(code: string, codeVerifier?: string): Promise<void> {
+    const t = await request<{ access_token: string; refresh_token: string }>('/auth/oauth/exchange', json({ code, provider: 'google', ...(codeVerifier ? { code_verifier: codeVerifier } : {}) }), { auth: false });
     tokens.set(t.access_token, t.refresh_token);
   },
   /** For development only: the backend refuses this unless ENABLE_DEV_AUTH is set. */
