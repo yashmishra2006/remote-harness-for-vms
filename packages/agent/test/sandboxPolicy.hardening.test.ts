@@ -1,12 +1,15 @@
 // The managed-mode policy removes the human approval step, so it must not be trivially bypassable.
 import assert from 'node:assert/strict';
 import { mkdirSync, mkdtempSync, realpathSync, rmSync, symlinkSync, writeFileSync } from 'node:fs';
+import { homedir } from 'node:os';
 import { join } from 'node:path';
 import test, { after } from 'node:test';
 import { isSandboxAutoAllowed } from '../src/sandboxPolicy.ts';
 
-// Not under /tmp: the policy treats /tmp as a harmless shared place, which would hide a real escape in these tests.
-const base = realpathSync(mkdtempSync(join(process.cwd(), '.sandbox-test-')));
+// Not under /tmp: the policy treats /tmp as a harmless shared place, which would hide a real escape in these tests. (If the
+// checkout itself lives under /tmp, e.g. a throwaway worktree, use the home directory instead.)
+const parent = realpathSync(process.cwd()).startsWith('/tmp/') ? homedir() : process.cwd();
+const base = realpathSync(mkdtempSync(join(parent, '.sandbox-test-')));
 const root = join(base, 'workspace');
 const outside = join(base, 'elsewhere');
 mkdirSync(root);
