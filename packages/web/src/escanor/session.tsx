@@ -27,6 +27,12 @@ interface Ctx {
   busy: boolean;
   /** Start "Continue with Google". Resolves when the browser has been opened (or the page is navigating away). */
   signInWithGoogle(): Promise<void>;
+  /**
+   * Email sign-in, in two parts: `beginEmailSignIn` remembers a PKCE secret for this attempt and returns its challenge (to send with the
+   * request), and `finishEmailSignIn` trades the one-time code the server returned for tokens.
+   */
+  beginEmailSignIn(): Promise<string | undefined>;
+  finishEmailSignIn(code: string): Promise<void>;
   signOut(): Promise<void>;
   /** Re-read the person from Escanor (after they changed their name). */
   refreshUser(): Promise<void>;
@@ -153,6 +159,15 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
           setBusy(false);
         }
       },
+      async beginEmailSignIn() {
+        // The verifier outlives this screen on purpose: after sign-up the person leaves for their mail app, and the app can be killed.
+        const pkce = await createPkcePair();
+        if (!pkce) return undefined;
+        sessionStorage.setItem(PKCE_KEY, pkce.verifier);
+        localStorage.setItem(PKCE_KEY, pkce.verifier);
+        return pkce.challenge;
+      },
+      finishEmailSignIn: (code: string) => finishSignIn(code),
       async signOut() {
         takeVerifier();
         await forgetPush(); // before the sign-in goes: the server needs it to forget this phone
@@ -173,7 +188,7 @@ export function SessionProvider({ children }: { children: React.ReactNode }) {
         setUser(me);
       },
     }),
-    [status, user, error, busy, redirect.uri, redirect.supported],
+    [status, user, error, busy, redirect.uri, redirect.supported, finishSignIn],
   );
 
   return <SessionContext.Provider value={value}>{children}</SessionContext.Provider>;

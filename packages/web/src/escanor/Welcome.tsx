@@ -1,10 +1,12 @@
 import { useState } from 'react';
 import { escanor } from './client';
+import EmailAuth from './EmailAuth';
 import { AuthShell, Button, GoogleIcon, Notice } from './ui';
 import { useEscanorSession } from './session';
 
 export default function Welcome({ onAdvanced }: { onAdvanced: () => void }) {
-  const { signInWithGoogle, busy, error, canSignInHere } = useEscanorSession();
+  const { signInWithGoogle, beginEmailSignIn, finishEmailSignIn, busy, error, canSignInHere } = useEscanorSession();
+  const [emailBusy, setEmailBusy] = useState(false);
   const [devEmail, setDevEmail] = useState('');
   // The email-only sign-in exists for developing against a local backend. A release build never shows it (the Android app's address is
   // also "localhost", and the production backend refuses it, as it must: it signs in as any address without a password).
@@ -19,7 +21,13 @@ export default function Welcome({ onAdvanced }: { onAdvanced: () => void }) {
     >
       {error && <Notice tone="error">{error}</Notice>}
       {!canSignInHere && <Notice tone="warn">Sign-in from this address is not supported. Open Escanor at app.escanor.in, or use the Android app.</Notice>}
-      <Button kind="quiet" onClick={() => void signInWithGoogle()} disabled={busy || !canSignInHere} className="flex w-full items-center justify-center gap-2.5 py-3">
+      {canSignInHere && <EmailAuth begin={beginEmailSignIn} onCode={(code) => void finishEmailSignIn(code)} onBusy={setEmailBusy} />}
+      <div className="flex items-center gap-3 py-1" aria-hidden="true">
+        <span className="h-px flex-1 bg-hairline" />
+        <span className="text-[12px] text-muted">or</span>
+        <span className="h-px flex-1 bg-hairline" />
+      </div>
+      <Button kind="quiet" onClick={() => void signInWithGoogle()} disabled={busy || emailBusy || !canSignInHere} className="flex w-full items-center justify-center gap-2.5 py-3">
         {busy ? null : <GoogleIcon />}
         {busy ? 'Opening Google…' : 'Continue with Google'}
       </Button>
