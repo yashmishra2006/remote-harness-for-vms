@@ -1,7 +1,7 @@
 import { describe, it } from 'node:test';
 import assert from 'node:assert/strict';
 import { readFileSync } from 'node:fs';
-import { autonomousBlockReason, BLOCKED_COMMANDS, BLOCKED_PATHS, MAX_COMMAND_CHARS, normalizeCommand, type Blocked } from '../src/autonomy.ts';
+import { autonomousBlockReason, BLOCKED_COMMANDS, BLOCKED_PATHS, MAX_COMMAND_CHARS, PROTECTED_BRANCHES, RM_TARGETS, normalizeCommand, type Blocked } from '../src/autonomy.ts';
 
 // The phone keeps its own copy (Dart cannot import this one). Its regular expressions are read out of its source and compared,
 // and autonomy-cases.json is run against both copies (the phone's test reads the same file).
@@ -23,7 +23,20 @@ function dartList(name: string): Blocked[] {
   return out;
 }
 
+/** The quoted strings of a Dart set literal (`const name = { 'a', r'$b', ... };`, spread loops are not understood on purpose). */
+function dartSet(name: string): string[] {
+  const body = dart.split(`${name} = {`)[1]?.split('};')[0];
+  assert.ok(body, `${name} not found in autonomy.dart`);
+  assert.ok(!body.includes('...') && !body.includes('for ('), `${name} must be a plain list of strings`);
+  return [...body.matchAll(/r?'((?:[^'\\]|\\.)*)'/g)].map((m) => m[1]);
+}
+
 describe('the Autonomous blocklist', () => {
+  it('has the same protected paths and branches as the phone', () => {
+    assert.deepEqual([...dartSet('_rmTargets')].sort(), [...RM_TARGETS].sort());
+    assert.deepEqual([...dartSet('_protectedBranches')].sort(), [...PROTECTED_BRANCHES].sort());
+  });
+
   it('has the same regular expressions as the phone', () => {
     assert.deepEqual(dartList('_blockedCommands'), BLOCKED_COMMANDS);
     assert.deepEqual(dartList('_blockedPaths'), BLOCKED_PATHS);
@@ -42,6 +55,7 @@ describe('the Autonomous blocklist', () => {
   it('reads a line continuation as a space and a run of spaces as one', () => {
     assert.equal(normalizeCommand('git push --force origin \\\n  main'), 'git push --force origin main');
     assert.equal(normalizeCommand('a\t\t b\nc'), 'a b\nc');
+    assert.equal(normalizeCommand('r\\\nm -rf /'), 'rm -rf /'); // deleted, as bash does
   });
 
   it('refuses a command too long to check, and stays fast on long ones it does check', () => {
@@ -51,7 +65,7 @@ describe('the Autonomous blocklist', () => {
     assert.ok(performance.now() - t < 50, 'a 100k-word command is answered at once');
     // Just under the limit, shaped to make a backtracking pattern blow up: answered in well under 50 ms each.
     const fill = (unit: string) => unit.repeat(Math.floor((MAX_COMMAND_CHARS - 10) / unit.length));
-    for (const command of [fill('git push '), fill('rm -r '), fill('dd '), fill('chmod 7'), fill('git push -f '), fill('a\\\n'), fill(' '), fill('\t '), fill('>/dev/s'), fill(':(){ '), fill('drop '), fill('passwd ')]) {
+    for (const command of [fill('git push '), fill('rm -r '), fill('dd '), fill('chmod 7'), fill('git push -f '), fill('a\\\n'), fill(' '), fill('\t '), fill('>/dev/s'), fill(':(){ '), fill('drop '), fill('passwd '), fill('('), fill('`'), fill('{'), fill('}'), fill(')'), fill('$('), fill('"'), fill('rm ~ '), fill('git push -f origin ')]) {
       assert.ok(command.length <= MAX_COMMAND_CHARS);
       t = performance.now();
       autonomousBlockReason('Bash', { command });

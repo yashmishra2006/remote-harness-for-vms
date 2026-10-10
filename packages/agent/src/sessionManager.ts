@@ -547,8 +547,18 @@ export class SessionManager {
     const live = this.live.get(sessionId);
     if (!live) return;
     const mode = this.effectiveMode(requested);
-    // Every run (not as root) was launched with the opt-in, so even a switch to bypass is just Claude Code's own set-mode. What
-    // this chat answers by itself changes only once Claude Code has taken the new mode.
+    // Every run (not as root) was launched with the opt-in, so even a switch to bypass is just Claude Code's own set-mode.
+    // Order matters for safety. A STRICTER state (the blocklist and the phone's approval now apply: anything but an explicit
+    // "Bypass permissions", and never a chat that was not already answering by itself) takes effect here at once, before Claude
+    // Code is told; if Claude Code then refuses, the stricter state stays (fail safe) and the error shows. A LOOSER one (into
+    // bypass, or into answering by itself) takes effect only once Claude Code has taken it.
+    const looser = requested === 'bypassPermissions' || (mode === 'bypassPermissions' && live.mode !== 'bypassPermissions');
+    if (!looser) {
+      live.requested = requested;
+      live.mode = mode;
+      this.control(sessionId, 'Changing the permission mode', (l) => l.setPermissionMode(mode));
+      return;
+    }
     this.control(sessionId, 'Changing the permission mode', async (l) => {
       await l.setPermissionMode(mode);
       l.requested = requested;

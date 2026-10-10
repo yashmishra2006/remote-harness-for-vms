@@ -481,9 +481,62 @@ describe('SessionManager', () => {
       manager.handleUserInput({ type: 'user_input', sessionId: 't1', tempId: 't1', text: 'hi', permissionMode: 'bypassPermissions' });
       const hook = hookOf(calls[0]);
       assert.deepEqual(await bash(hook, 'git push --force origin main'), {});
-      manager.setPermissionMode('t1', 'auto'); // the run is still going
-      await new Promise((r) => setTimeout(r, 10)); // ...and takes effect once Claude Code has taken the mode
+      manager.setPermissionMode('t1', 'auto'); // the run is still going; a stricter mode applies at once, with no wait
       assert.ok(denied(await bash(hook, 'git push --force origin main')));
+      release();
+    });
+
+    // A run whose set-mode is answered by `answer` (never, or an error), so what the chat does in the meantime can be seen.
+    function slowModeSwitch(answer: 'never' | 'refuse', startMode = 'bypassPermissions') {
+      const sent: AgentToHubMessage[] = [];
+      const calls: any[] = [];
+      let release!: () => void;
+      const held = new Promise<void>((r) => (release = r));
+      const query = ((args: any) => {
+        calls.push(args.options);
+        return {
+          [Symbol.asyncIterator]: async function* () { await held; },
+          interrupt: async () => {},
+          setPermissionMode: () => (answer === 'never' ? new Promise<void>(() => {}) : Promise.reject(new Error('refused by claude code'))),
+          setModel: async () => {}, applyFlagSettings: async () => {}, setMcpServers: async () => {}, mcpServerStatus: async () => [], close: () => {},
+        };
+      }) as never;
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'sm-test-')));
+      const manager = new SessionManager(dir, join(dir, 'data'), [{ id: 'default', label: 'default' }], (x) => sent.push(x), { query, isRoot: false, defaultMode: 'bypassPermissions' } as never);
+      manager.handleUserInput({ type: 'user_input', sessionId: 't1', tempId: 't1', text: 'hi', permissionMode: startMode });
+      return { manager, sent, calls, release };
+    }
+
+    it('a stricter mode applies at once, before Claude Code has answered', async () => {
+      const { manager, calls, release } = slowModeSwitch('never');
+      const hook = hookOf(calls[0]);
+      assert.deepEqual(await bash(hook, 'rm -rf /'), {}, 'bypass: unrestricted');
+      manager.setPermissionMode('t1', 'auto');
+      assert.ok(denied(await bash(hook, 'rm -rf /')), 'the blocklist is on while Claude Code has not answered');
+      manager.setPermissionMode('t1', 'default');
+      void calls[0].canUseTool('Bash', { command: 'rm -rf build' }, { signal });
+      release();
+    });
+
+    it('a stricter mode Claude Code refuses stays in force, and the error shows', async () => {
+      const { manager, sent, calls, release } = slowModeSwitch('refuse');
+      const hook = hookOf(calls[0]);
+      manager.setPermissionMode('t1', 'auto');
+      await new Promise((r) => setTimeout(r, 10)); // only to let the refusal arrive
+      assert.ok(sent.some((x) => x.type === 'error' && /permission mode failed/.test((x as { message: string }).message)));
+      assert.ok(denied(await bash(hook, 'rm -rf /')), 'fail safe: still the stricter state');
+      manager.setPermissionMode('t1', 'default');
+      await new Promise((r) => setTimeout(r, 10));
+      void calls[0].canUseTool('Bash', { command: 'rm -rf build' }, { signal });
+      assert.equal(sent.filter((x) => x.type === 'permission_request').length, 1, 'the phone is asked: default mode holds');
+      release();
+    });
+
+    it('a looser switch (into bypass) waits for Claude Code: until then the phone is still asked', async () => {
+      const { manager, sent, calls, release } = slowModeSwitch('never', 'default');
+      manager.setPermissionMode('t1', 'bypassPermissions'); // never confirmed
+      void calls[0].canUseTool('Bash', { command: 'rm -rf build' }, { signal });
+      assert.equal(sent.filter((x) => x.type === 'permission_request').length, 1, 'still default: asks the phone');
       release();
     });
 
@@ -534,7 +587,6 @@ describe('SessionManager', () => {
       await new Promise((r) => setTimeout(r, 10));
       assert.ok(sent.some((x) => x.type === 'error' && /permission mode failed/.test((x as { message: string }).message)));
       void calls[0].canUseTool('Bash', { command: 'rm -rf build' }, { signal });
-      await new Promise((r) => setTimeout(r, 10));
       assert.equal(sent.filter((x) => x.type === 'permission_request').length, 1, 'still asks the phone: it is not in bypass');
       release();
     });
