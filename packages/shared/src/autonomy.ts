@@ -68,11 +68,37 @@ const RM_TARGET_SET = new Set(RM_TARGETS);
 export const PROTECTED_BRANCHES: readonly string[] = ['main', 'master', 'production', 'prod', 'release'];
 const PROTECTED_SET = new Set(PROTECTED_BRANCHES);
 
+/**
+ * Deletes each line continuation, as bash does: a backslash-newline whose backslash is not itself escaped (an odd number of
+ * backslashes in a row before the newline). `echo foo\\<newline>rm -rf /` is two commands, and stays two. Only before a newline
+ * itself: bash reads backslash-CR-LF as an escaped CR, and the LF still ends the command. One pass, counting.
+ */
+export function joinContinuations(command: string): string {
+  if (!command.includes('\\')) return command;
+  const parts: string[] = [];
+  let from = 0;
+  let run = 0; // backslashes in a row just before i
+  for (let i = 0; i < command.length; i++) {
+    const c = command.charCodeAt(i);
+    if (c === 0x5c) {
+      run++;
+      continue;
+    }
+    if (c === 0x0a && run % 2 === 1) {
+      parts.push(command.slice(from, i - 1));
+      from = i + 1;
+    }
+    run = 0;
+  }
+  if (from === 0) return command;
+  parts.push(command.slice(from));
+  return parts.join('');
+}
+
 /** A line continuation is deleted (as bash does), and any run of spaces or tabs is one space (newlines stay: they separate commands). */
 export function normalizeCommand(command: string): string {
   // Only what changes is replaced (other whitespace, then runs of spaces), so an ordinary long command is scanned, not rebuilt.
-  const s = command.includes('\\') ? command.replace(/\\\r?\n/g, '') : command;
-  return s.replace(/[^\S\n ]/g, ' ').replace(/  +/g, ' ');
+  return joinContinuations(command).replace(/[^\S\n ]/g, ' ').replace(/  +/g, ' ');
 }
 
 /** A word as the shell would mostly see it: without quotes, and without { around its start or } at its end. */
@@ -87,23 +113,40 @@ function clean(word: string): string {
 
 /** `$(`, backticks and parentheses separate words wherever they stand (`x=$(rm -rf /)`, `"a$(rm -rf /)"`). */
 const SUBSHELL = /\$\(|[`()]/g;
+/**
+ * A path glued to the end of a substitution (`$(pwd)/*`, `"$(mktemp -d)/"`, `` `pwd`/x ``) is relative to what the substitution
+ * printed, not the root: the `)` or backtick becomes ` .`, so the path that follows reads `./*`. (A backtick that opens a
+ * substitution and is followed by `/` only gains a `./` in front of a program path, which still names the same program.)
+ */
+const AFTER_SUBSTITUTION = /[)`](?=["']*\/)/g;
+
+/** `~`, `$HOME` and `${HOME}` stand for a folder in /home (or /root): `~/..` is /home. */
+const HOME_ALIASES = new Set(['~', '$HOME', '${HOME}']);
+const isGlobAll = (seg: string) => seg.length > 0 && [...seg].every((c) => c === '*');
 
 /**
- * A path as the shell would resolve it, for comparing with RM_TARGETS: repeated and `/./` slashes collapse, `..` goes up, and a
- * trailing `/*` or `/.` means the folder itself (`~/*`, `/home/*`, `//`, `~/.` are the roots they glob or alias).
+ * A path as the shell would resolve it, for comparing with RM_TARGETS: repeated and `/./` slashes collapse, `..` goes up (above
+ * `~` too: `~/..` is /home), and trailing `/*` (`/*\/*`...) or `/.` means the folder itself (`~/*`, `~/*\/*`, `/home/*`, `//`,
+ * `~/.` are the roots they glob or alias).
  */
 export function canonPath(w: string): string {
   if (!w.includes('/') && w !== '*') return w;
-  const stack: string[] = [];
-  for (const seg of w.split('/')) {
+  const segs = w.split('/');
+  const home = HOME_ALIASES.has(segs[0]);
+  const absolute = home || w.startsWith('/');
+  // A home alias starts as /home/<it>, and is written back as the alias if the path stays inside it.
+  const stack: string[] = home ? ['home', segs[0]] : [];
+  for (let i = home ? 1 : 0; i < segs.length; i++) {
+    const seg = segs[i];
     if (seg === '' || seg === '.') continue;
     if (seg === '..') {
       if (stack.length && stack[stack.length - 1] !== '..') stack.pop();
-      else if (!w.startsWith('/')) stack.push(seg);
+      else if (!absolute) stack.push(seg);
     } else stack.push(seg);
   }
-  if (stack[stack.length - 1] === '*') stack.pop();
-  return (w.startsWith('/') ? '/' : '') + stack.join('/');
+  while (stack.length && isGlobAll(stack[stack.length - 1])) stack.pop();
+  if (home && stack.length >= 2 && stack[0] === 'home' && stack[1] === segs[0]) return [segs[0], ...stack.slice(2)].join('/');
+  return (absolute ? '/' : '') + stack.join('/');
 }
 
 /** The program a word runs: `/bin/rm`, `\rm` and `rm` are all rm. */
@@ -116,12 +159,16 @@ const isOctal777 = (w: string) => w.length >= 3 && w.endsWith('777') && [...w].e
 const SHORT_FLAGS = /^-[A-Za-z]+$/;
 const isForceFlag = (w: string) => w.startsWith('-') && (w.startsWith('--force') || (w.includes('f') && SHORT_FLAGS.test(w)));
 const namesProtectedBranch = (w: string) => w.split(/[^A-Za-z0-9_]+/).some((p) => PROTECTED_SET.has(p));
+/** `HEAD` and `@` push the current branch, which may be main: no branch is named. */
+const isCurrentBranch = (w: string) => w === 'HEAD' || w === '@' || w === '+HEAD' || w === '+@';
+/** `-o X` / `--push-option X` (and `-fo X`): X is a push option, not a refspec. */
+const takesPushOption = (w: string) => w === '--push-option' || (SHORT_FLAGS.test(w) && w.endsWith('o'));
 
 /** The word-by-word rules, one pass over each command of the line. */
 function wordRules(normalized: string): string | null {
-  for (const segment of normalized.replace(SUBSHELL, ' ').split(/[;&|\n]+/)) {
+  for (const segment of normalized.replace(AFTER_SUBSTITUTION, ' .').replace(SUBSHELL, ' ').split(/[;&|\n]+/)) {
     let rm: { recursive: boolean; wipe: boolean } | null = null;
-    let git: { push: boolean; force: boolean; branch: boolean; del: boolean; args: string[] } | null = null;
+    let git: { push: boolean; force: boolean; branch: boolean; del: boolean; skip: boolean; args: string[] } | null = null;
     let dd = false;
     let chmod: 'flags' | 'mode' | 'slash' | null = null;
     for (const raw of segment.split(/ +/)) {
@@ -134,7 +181,7 @@ function wordRules(normalized: string): string | null {
         continue;
       }
       if (name === 'git') {
-        git = { push: false, force: false, branch: false, del: false, args: [] };
+        git = { push: false, force: false, branch: false, del: false, skip: false, args: [] };
         continue;
       }
       if (name === 'dd') {
@@ -157,8 +204,11 @@ function wordRules(normalized: string): string | null {
       if (git) {
         if (!git.push) {
           if (w === 'push') git.push = true;
+        } else if (git.skip) {
+          git.skip = false; // the value of -o / --push-option
         } else {
-          if (isForceFlag(w) || (w.startsWith('+') && namesProtectedBranch(w))) git.force = true;
+          if (takesPushOption(w)) git.skip = true;
+          if (isForceFlag(w) || (w.startsWith('+') && (namesProtectedBranch(w) || isCurrentBranch(w)))) git.force = true;
           if (w === '--delete' || (SHORT_FLAGS.test(w) && w.includes('d'))) git.del = true;
           if (!w.startsWith('-')) git.args.push(w);
           if (!w.startsWith('-') || w.includes('=')) git.branch ||= namesProtectedBranch(w);
@@ -177,8 +227,9 @@ function wordRules(normalized: string): string | null {
       if (git.args.some((a) => a.startsWith(':') && namesProtectedBranch(a)) || (git.del && git.args.some(namesProtectedBranch))) {
         return WHY.deleteBranch;
       }
-      // A force push that names no branch goes wherever the push default points, which can be main. (The first word is the remote.)
-      if (git.force && git.args.length < 2) return WHY.forcePushNoBranch;
+      // A force push that names no branch goes wherever the push default points, which can be main (the first word is the
+      // remote); so does one that pushes HEAD or @, the current branch.
+      if (git.force && (git.args.length < 2 || git.args.slice(1).some(isCurrentBranch))) return WHY.forcePushNoBranch;
     }
   }
   return null;

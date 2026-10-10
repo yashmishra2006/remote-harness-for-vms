@@ -65,7 +65,7 @@ describe('the Autonomous blocklist', () => {
     assert.ok(performance.now() - t < 50, 'a 100k-word command is answered at once');
     // Just under the limit, shaped to make a backtracking pattern blow up: answered in well under 50 ms each.
     const fill = (unit: string) => unit.repeat(Math.floor((MAX_COMMAND_CHARS - 10) / unit.length));
-    for (const command of [fill('git push '), fill('rm -r '), fill('dd '), fill('chmod 7'), fill('git push -f '), fill('a\\\n'), fill(' '), fill('\t '), fill('>/dev/s'), fill(':(){ '), fill('drop '), fill('passwd '), fill('('), fill('`'), fill('{'), fill('}'), fill(')'), fill('$('), fill('"'), fill('rm ~ '), fill('git push -f origin ')]) {
+    for (const command of [fill('git push '), fill('rm -r '), fill('dd '), fill('chmod 7'), fill('git push -f '), fill('a\\\n'), fill(' '), fill('\t '), fill('>/dev/s'), fill(':(){ '), fill('drop '), fill('passwd '), fill('('), fill('`'), fill('{'), fill('}'), fill(')'), fill('$('), fill('"'), fill('rm ~ '), fill('git push -f origin '), fill('\\\\\n'), fill('\\'), fill('rm -rf )/'), fill('rm -rf `/'), fill(')"/'), fill('rm ~/.. '), fill('/..'), fill('~/*'), fill('git push -f -o x origin HEAD ')]) {
       assert.ok(command.length <= MAX_COMMAND_CHARS);
       t = performance.now();
       autonomousBlockReason('Bash', { command });

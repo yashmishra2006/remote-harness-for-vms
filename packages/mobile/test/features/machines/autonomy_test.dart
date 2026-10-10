@@ -130,7 +130,7 @@ void main() {
     test('one huge word of brackets, quotes or backticks is cut once, not over and over (it runs on the UI isolate)', () {
       // The word is cleaned of its wrapping characters; that used to copy the rest of the word once per character.
       final sw = Stopwatch();
-      for (final unit in ['(', '`', '{', '}', ')', r'$(', '"', "'", '{}', '()']) {
+      for (final unit in ['(', '`', '{', '}', ')', r'$(', '"', "'", '{}', '()', '\\', '\\\\\n', 'rm -rf )/', 'rm -rf `/', ')"/','rm ~/.. ', '/..', '~/*', 'git push -f -o x origin HEAD ']) {
         final c = unit * ((maxCommandChars - 10) ~/ unit.length);
         var best = 1 << 30;
         for (var i = 0; i < 3; i++) {
