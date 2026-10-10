@@ -532,6 +532,69 @@ describe('SessionManager', () => {
       release();
     });
 
+    // Leaving bypass: until Claude Code confirms it has left, it still runs in bypass and never calls canUseTool, so only the hook
+    // stands between a command and the machine. It must keep checking until then, and for good if Claude Code refuses.
+    for (const answer of ['never', 'refuse'] as const) {
+      for (const target of ['default', 'plan', 'acceptEdits'] as const) {
+        it(`Autonomous (bypass) -> ${target}, Claude Code ${answer === 'never' ? 'not answering yet' : 'refusing'}: the hook still blocks`, async () => {
+          const { manager, calls, release } = slowModeSwitch(answer, 'auto');
+          const hook = hookOf(calls[0]);
+          assert.ok(denied(await bash(hook, 'rm -rf /')), 'guarded before the switch');
+          manager.setPermissionMode('t1', target);
+          assert.ok(denied(await bash(hook, 'rm -rf /')), 'guarded at once');
+          await new Promise((r) => setTimeout(r, 10)); // let a refusal arrive
+          assert.ok(denied(await bash(hook, 'rm -rf /')), 'still guarded: Claude Code may still be in bypass');
+          release();
+        });
+      }
+    }
+
+    it('once Claude Code confirms leaving bypass, the hook stands down and the phone decides', async () => {
+      let release!: () => void;
+      const { manager, sent, calls, modes } = make({ defaultMode: 'bypassPermissions', isRoot: false }, new Promise<void>((r) => (release = r)));
+      manager.handleUserInput({ type: 'user_input', sessionId: 't1', tempId: 't1', text: 'hi', permissionMode: 'auto' });
+      manager.setPermissionMode('t1', 'default');
+      await new Promise((r) => setTimeout(r, 0));
+      assert.deepEqual(modes, ['default']);
+      assert.deepEqual(await bash(hookOf(calls[0]), 'rm -rf /'), {}, 'default mode: the phone decides, not the hook');
+      void calls[0].canUseTool('Bash', { command: 'rm -rf build' }, { signal });
+      assert.equal(sent.filter((x) => x.type === 'permission_request').length, 1);
+      release();
+    });
+
+    it('a late confirmation of a looser switch does not undo a stricter one made after it', async () => {
+      const sent: AgentToHubMessage[] = [];
+      const calls: any[] = [];
+      const pending: Array<() => void> = [];
+      let release!: () => void;
+      const held = new Promise<void>((r) => (release = r));
+      const query = ((args: any) => {
+        calls.push(args.options);
+        return {
+          [Symbol.asyncIterator]: async function* () { await held; },
+          interrupt: async () => {},
+          setPermissionMode: () => new Promise<void>((r) => pending.push(r)),
+          setModel: async () => {}, applyFlagSettings: async () => {}, setMcpServers: async () => {}, mcpServerStatus: async () => [], close: () => {},
+        };
+      }) as never;
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'sm-test-')));
+      const manager = new SessionManager(dir, join(dir, 'data'), [{ id: 'default', label: 'default' }], (x) => sent.push(x), { query, isRoot: false } as never);
+      manager.handleUserInput({ type: 'user_input', sessionId: 't1', tempId: 't1', text: 'hi', permissionMode: 'default' });
+      const hook = hookOf(calls[0]);
+      manager.setPermissionMode('t1', 'bypassPermissions'); // looser: waits
+      manager.setPermissionMode('t1', 'default'); // stricter: at once
+      pending[0](); // Claude Code takes bypass...
+      await new Promise((r) => setTimeout(r, 0));
+      // ...and is now in bypass until it takes default: unrestricted bypass must not come back, so the hook checks.
+      assert.ok(denied(await bash(hook, 'rm -rf /')), 'Claude Code is in bypass, the person asked for default: guarded');
+      void calls[0].canUseTool('Bash', { command: 'rm -rf build' }, { signal });
+      assert.equal(sent.filter((x) => x.type === 'permission_request').length, 1, 'the phone is asked, not answered by itself');
+      pending[1]();
+      await new Promise((r) => setTimeout(r, 0));
+      assert.deepEqual(await bash(hook, 'rm -rf /'), {}, 'confirmed default: the phone decides');
+      release();
+    });
+
     it('a looser switch (into bypass) waits for Claude Code: until then the phone is still asked', async () => {
       const { manager, sent, calls, release } = slowModeSwitch('never', 'default');
       manager.setPermissionMode('t1', 'bypassPermissions'); // never confirmed

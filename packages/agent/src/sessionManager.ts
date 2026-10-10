@@ -32,8 +32,18 @@ type LiveSession = {
   setMcpServers: (servers: Record<string, McpServerConfig>) => Promise<unknown>;
   mcpServerStatus: () => Promise<Array<{ name: string; status: string; error?: string }>>;
   close: () => void;
-  /** The mode the chat is in now (after effectiveMode). In bypass, canUseTool answers everything itself. */
+  /**
+   * The mode the chat is in now as far as the agent is concerned (after effectiveMode). In bypass, canUseTool answers everything
+   * itself. A stricter mode is set here at once, before Claude Code has taken it (see confirmed).
+   */
   mode: PermissionMode;
+  /**
+   * The mode Claude Code has confirmed it runs in (after effectiveMode). It can lag mode, or stay behind for good when Claude Code
+   * refuses a switch: while it is bypass, Claude Code never calls canUseTool, so the hook must keep checking (see guarded).
+   */
+  confirmed: PermissionMode;
+  /** Counts mode switches, so a late confirmation of a looser switch cannot undo a stricter one made after it. */
+  modeSwitches: number;
   /**
    * The mode the phone or app explicitly asked for ('auto' stays 'auto' here even where it runs as bypass), or undefined when
    * none was (the machine's default applies). Decides whether the blocklist applies.
@@ -309,7 +319,8 @@ export class SessionManager {
    * permissions" (not as root) runs without it.
    */
   private guarded(session: LiveSession | undefined): boolean {
-    if (!session || session.mode !== 'bypassPermissions') return false;
+    // Either the chat is meant to be in bypass, or Claude Code still is (a switch out of it not yet confirmed, or refused).
+    if (!session || (session.mode !== 'bypassPermissions' && session.confirmed !== 'bypassPermissions')) return false;
     return session.requested !== 'bypassPermissions' || this.rootFallback;
   }
 
@@ -420,6 +431,8 @@ export class SessionManager {
       queue,
       cwd,
       mode: startMode,
+      confirmed: startMode,
+      modeSwitches: 0,
       requested,
       interrupt: () => q.interrupt(),
       setPermissionMode: (mode) => q.setPermissionMode(this.sdkMode(mode)),
@@ -547,22 +560,26 @@ export class SessionManager {
     const live = this.live.get(sessionId);
     if (!live) return;
     const mode = this.effectiveMode(requested);
+    const turn = ++live.modeSwitches;
     // Every run (not as root) was launched with the opt-in, so even a switch to bypass is just Claude Code's own set-mode.
     // Order matters for safety. A STRICTER state (the blocklist and the phone's approval now apply: anything but an explicit
     // "Bypass permissions", and never a chat that was not already answering by itself) takes effect here at once, before Claude
-    // Code is told; if Claude Code then refuses, the stricter state stays (fail safe) and the error shows. A LOOSER one (into
-    // bypass, or into answering by itself) takes effect only once Claude Code has taken it.
+    // Code is told. Until Claude Code confirms, `confirmed` keeps the mode it still runs in, so a chat leaving bypass stays
+    // guarded by the hook (Claude Code in bypass never calls canUseTool); if Claude Code refuses, it stays guarded for good and
+    // the error shows. A LOOSER one (into bypass, or into answering by itself) takes effect only once Claude Code has taken it,
+    // and only if no other switch was asked for in the meantime.
     const looser = requested === 'bypassPermissions' || (mode === 'bypassPermissions' && live.mode !== 'bypassPermissions');
     if (!looser) {
       live.requested = requested;
       live.mode = mode;
-      this.control(sessionId, 'Changing the permission mode', (l) => l.setPermissionMode(mode));
-      return;
     }
     this.control(sessionId, 'Changing the permission mode', async (l) => {
       await l.setPermissionMode(mode);
-      l.requested = requested;
-      l.mode = mode;
+      l.confirmed = mode;
+      if (looser && l.modeSwitches === turn) {
+        l.requested = requested;
+        l.mode = mode;
+      }
     });
   }
 
