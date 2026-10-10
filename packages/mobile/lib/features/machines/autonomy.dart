@@ -57,8 +57,8 @@ final List<(RegExp, String)> _blockedCommands = [
   (RegExp(r'>\s?/dev/(?:sd|nvme|vd|xvd|hd)'), 'writes straight onto a disk'),
   (RegExp(r':\(\)\s?\{\s?:\s?\|\s?:\s?&\s?\}\s?;\s?:'), 'a fork bomb'),
   (RegExp(r'\b(?:shutdown|poweroff|halt|reboot)\b'), 'turns the machine off'),
-  (RegExp(r'\bdrop\s(?:database|schema)\b', caseSensitive: false), 'drops a whole database'),
-  (RegExp(r'\btruncate\stable\b', caseSensitive: false), 'empties a table'),
+  (RegExp(r'\bdrop\s+(?:database|schema)\b', caseSensitive: false), 'drops a whole database'),
+  (RegExp(r'\btruncate\s+table\b', caseSensitive: false), 'empties a table'),
   (RegExp(r'\b(?:userdel|deluser)\b|\bpasswd\s-d\b'), 'changes who can log in'),
   (RegExp(r'\biptables\s-F\b|\bufw\sdisable\b'), 'turns the firewall off'),
 ];
@@ -71,6 +71,9 @@ final List<(RegExp, String)> _blockedPaths = [
 
 const _whyWipe = 'wipes the machine or a home folder';
 const _whyForcePush = 'force-pushes over a main branch';
+const _whyForcePushNoBranch =
+    'force-pushes without naming a branch, which could overwrite a main branch (name a non-protected branch explicitly, e.g. git push --force origin my-branch)';
+const _whyDeleteBranch = 'deletes a main branch on the remote';
 const _whyDisk = 'writes straight onto a disk';
 const _whyChmod = 'opens up every file on the machine';
 const _whyTooLong = 'is too long to check (over $maxCommandChars characters)';
@@ -80,40 +83,111 @@ const _fileTools = {'Write', 'Edit', 'MultiEdit', 'NotebookEdit'};
 /// Any tool whose input has one of these as a string runs a command (Bash, Monitor, PowerShell, an MCP shell tool...).
 const _commandFields = ['command', 'cmd', 'script'];
 
-final Set<String> _rmTargets = {
-  '/', '/*', '~', '~/', r'$HOME', r'$HOME/', r'${HOME}', r'${HOME}/',
-  for (final d in ['home', 'root', 'etc', 'usr', 'var', 'boot', 'bin', 'lib', 'opt']) ...['/$d', '/$d/'],
+/// What `rm -r` must never be pointed at (compared, after _canonPath, with the words of the command; the agent has the same list).
+const _rmTargets = {
+  '/', '/*', '~', '~/', r'$HOME', r'$HOME/',
+  r'${HOME}', r'${HOME}/', '/home', '/home/', '/root', '/root/',
+  '/etc', '/etc/', '/usr', '/usr/', '/var', '/var/',
+  '/boot', '/boot/', '/bin', '/bin/', '/lib', '/lib/',
+  '/opt', '/opt/',
 };
 const _protectedBranches = {'main', 'master', 'production', 'prod', 'release'};
 
-/// A line continuation is a space, and any run of spaces or tabs one space (newlines stay: they separate commands).
+/// Deletes each line continuation, as bash does: a backslash-newline whose backslash is not itself escaped (an odd number of
+/// backslashes in a row before the newline). `echo foo\\<newline>rm -rf /` is two commands, and stays two. Only before a newline
+/// itself: bash reads backslash-CR-LF as an escaped CR, and the LF still ends the command. One pass, counting.
+String joinContinuations(String command) {
+  if (!command.contains('\\')) return command;
+  final out = StringBuffer();
+  var from = 0;
+  var run = 0; // backslashes in a row just before i
+  for (var i = 0; i < command.length; i++) {
+    final c = command.codeUnitAt(i);
+    if (c == 0x5c) {
+      run++;
+      continue;
+    }
+    if (c == 0x0a && run.isOdd) {
+      out.write(command.substring(from, i - 1));
+      from = i + 1;
+    }
+    run = 0;
+  }
+  if (from == 0) return command;
+  out.write(command.substring(from));
+  return out.toString();
+}
+
+/// A line continuation is deleted (as bash does), and any run of spaces or tabs one space (newlines stay: they separate commands).
 /// Only what changes is replaced (other whitespace, then runs of spaces), so an ordinary long command is scanned, not rebuilt.
 String normalizeCommand(String command) {
-  var s = command.contains('\\') ? command.replaceAll(_continuation, ' ') : command;
-  s = s.replaceAll(_otherSpace, ' ');
+  final s = joinContinuations(command).replaceAll(_otherSpace, ' ');
   return s.replaceAll(_spaceRun, ' ');
 }
 
-final _continuation = RegExp(r'\\\r?\n');
 final _otherSpace = RegExp(r'[^\S\n ]');
 final _spaceRun = RegExp(r'  +');
 
-/// A word as the shell would mostly see it: without quotes, and without $( ` ( { around it.
+/// A word as the shell would mostly see it: without quotes, and without { around its start or } at its end.
 final _quotes = RegExp('["\']');
 
+/// Linear: it works out where the word starts and ends, and cuts once.
 String _clean(String word) {
   if (word.isEmpty) return word;
-  final first = word.codeUnitAt(0), last = word.codeUnitAt(word.length - 1);
-  const wrap = {0x22, 0x27, 0x24, 0x28, 0x60, 0x7b, 0x29, 0x7d}; // " ' $ ( ` { ) }
-  if (!wrap.contains(first) && !wrap.contains(last) && !word.contains('"') && !word.contains("'")) return word;
-  var w = word.contains('"') || word.contains("'") ? word.replaceAll(_quotes, '') : word;
-  while (w.startsWith(r'$(') || w.startsWith('(') || w.startsWith('`') || w.startsWith('{')) {
-    w = w.substring(w.startsWith(r'$(') ? 2 : 1);
+  final w = word.contains('"') || word.contains("'") ? word.replaceAll(_quotes, '') : word;
+  var start = 0;
+  var end = w.length;
+  while (start < end && w.codeUnitAt(start) == 0x7b) {
+    start++; // {
   }
-  while (w.endsWith(')') || w.endsWith('`') || (w.endsWith('}') && !w.startsWith(r'${'))) {
-    w = w.substring(0, w.length - 1);
+  if (!w.startsWith(r'${')) {
+    while (end > start && w.codeUnitAt(end - 1) == 0x7d) {
+      end--; // }
+    }
   }
-  return w;
+  return start == 0 && end == w.length ? w : w.substring(start, end);
+}
+
+/// `$(`, backticks and parentheses separate words wherever they stand (`x=$(rm -rf /)`, `"a$(rm -rf /)"`).
+final _subshell = RegExp(r'\$\(|[`()]');
+
+/// A path glued to the end of a substitution (`$(pwd)/*`, `"$(mktemp -d)/"`, `` `pwd`/x ``) is relative to what the substitution
+/// printed, not the root: the `)` or backtick becomes ` .`, so the path that follows reads `./*`. (A backtick that opens a
+/// substitution and is followed by `/` only gains a `./` in front of a program path, which still names the same program.)
+final _afterSubstitution = RegExp(r'''[)`](?=["']*/)''');
+
+/// `~`, `$HOME` and `${HOME}` stand for a folder in /home (or /root): `~/..` is /home.
+const _homeAliases = {'~', r'$HOME', r'${HOME}'};
+bool _isGlobAll(String seg) => seg.isNotEmpty && seg.codeUnits.every((c) => c == 0x2a);
+
+/// A path as the shell would resolve it, for comparing with _rmTargets: repeated and `/./` slashes collapse, `..` goes up (above
+/// `~` too: `~/..` is /home), and trailing `/*` (`/*/*`...) or `/.` means the folder itself (`~/*`, `~/*/*`, `/home/*`, `//`,
+/// `~/.` are the roots they glob or alias).
+String _canonPath(String w) {
+  if (!w.contains('/') && w != '*') return w;
+  final segs = w.split('/');
+  final home = _homeAliases.contains(segs[0]);
+  final absolute = home || w.startsWith('/');
+  // A home alias starts as /home/<it>, and is written back as the alias if the path stays inside it.
+  final stack = home ? <String>['home', segs[0]] : <String>[];
+  for (var i = home ? 1 : 0; i < segs.length; i++) {
+    final seg = segs[i];
+    if (seg.isEmpty || seg == '.') continue;
+    if (seg == '..') {
+      if (stack.isNotEmpty && stack.last != '..') {
+        stack.removeLast();
+      } else if (!absolute) {
+        stack.add(seg);
+      }
+    } else {
+      stack.add(seg);
+    }
+  }
+  while (stack.isNotEmpty && _isGlobAll(stack.last)) {
+    stack.removeLast();
+  }
+  if (home && stack.length >= 2 && stack[0] == 'home' && stack[1] == segs[0]) return [segs[0], ...stack.skip(2)].join('/');
+  return (absolute ? '/' : '') + stack.join('/');
 }
 
 /// The program a word runs: `/bin/rm`, `\rm` and `rm` are all rm.
@@ -126,29 +200,38 @@ final _shortFlags = RegExp(r'^-[A-Za-z]+$');
 final _rmRecursive = RegExp('[rRfF]');
 final _nonWord = RegExp(r'[^A-Za-z0-9_]+');
 final _segmentBreak = RegExp(r'[;&|\n]+');
+final _spaces = RegExp(r' +');
 
 bool _isOctal777(String w) => w.length >= 3 && w.endsWith('777') && w.codeUnits.every((c) => c >= 0x30 && c <= 0x37);
 bool _isForceFlag(String w) => w.startsWith('-') && (w.startsWith('--force') || (w.contains('f') && _shortFlags.hasMatch(w)));
 bool _namesProtectedBranch(String w) => w.split(_nonWord).any(_protectedBranches.contains);
 
+/// `HEAD` and `@` push the current branch, which may be main: no branch is named.
+bool _isCurrentBranch(String w) => w == 'HEAD' || w == '@' || w == '+HEAD' || w == '+@';
+
+/// `-o X` / `--push-option X` (and `-fo X`): X is a push option, not a refspec.
+bool _takesPushOption(String w) => w == '--push-option' || (_shortFlags.hasMatch(w) && w.endsWith('o'));
+
 /// The word-by-word rules, one pass over each command of the line.
 String? _wordRules(String normalized) {
-  for (final segment in normalized.split(_segmentBreak)) {
+  for (final segment in normalized.replaceAll(_afterSubstitution, ' .').replaceAll(_subshell, ' ').split(_segmentBreak)) {
     bool? rmRecursive; // null: no rm seen
-    ({bool push, bool force, bool branch})? git;
+    var rmWipe = false;
+    ({bool push, bool force, bool branch, bool del, bool skip, List<String> args})? git;
     var dd = false;
     String? chmod; // 'flags' | 'slash'
-    for (final raw in segment.split(' ')) {
+    for (final raw in segment.split(_spaces)) {
       if (raw.isEmpty) continue;
       final w = _clean(raw);
       // Only a word that could name one of the four programs is looked at more closely.
       final name = w.endsWith('rm') || w.endsWith('git') || w.endsWith('dd') || w.endsWith('chmod') ? _program(w) : '';
       if (name == 'rm') {
         rmRecursive = false;
+        rmWipe = false;
         continue;
       }
       if (name == 'git') {
-        git = (push: false, force: false, branch: false);
+        git = (push: false, force: false, branch: false, del: false, skip: false, args: <String>[]);
         continue;
       }
       if (name == 'dd') {
@@ -160,21 +243,29 @@ String? _wordRules(String normalized) {
         continue;
       }
       if (rmRecursive != null) {
+        // Options may come after the target (`rm ~ -rf`), so both are remembered and either order blocks.
         if (w.startsWith('-')) {
           if (w == '--recursive' || w == '--force' || (!w.startsWith('--') && _rmRecursive.hasMatch(w))) rmRecursive = true;
-        } else if (rmRecursive && _rmTargets.contains(w)) {
-          return _whyWipe;
+        } else if (_rmTargets.contains(w) || _rmTargets.contains(_canonPath(w))) {
+          rmWipe = true;
         }
+        if (rmRecursive == true && rmWipe) return _whyWipe;
       }
       final g = git;
       if (g != null) {
         if (!g.push) {
-          if (w == 'push') git = (push: true, force: false, branch: false);
+          if (w == 'push') git = (push: true, force: false, branch: false, del: false, skip: false, args: g.args);
+        } else if (g.skip) {
+          // the value of -o / --push-option
+          git = (push: true, force: g.force, branch: g.branch, del: g.del, skip: false, args: g.args);
         } else {
-          final force = g.force || _isForceFlag(w) || (w.startsWith('+') && _namesProtectedBranch(w));
+          final skip = _takesPushOption(w);
+          final force = g.force || _isForceFlag(w) || (w.startsWith('+') && (_namesProtectedBranch(w) || _isCurrentBranch(w)));
+          final del = g.del || w == '--delete' || (_shortFlags.hasMatch(w) && w.contains('d'));
+          if (!w.startsWith('-')) g.args.add(w);
           final branch = g.branch || ((!w.startsWith('-') || w.contains('=')) && _namesProtectedBranch(w));
           if (force && branch) return _whyForcePush;
-          git = (push: true, force: force, branch: branch);
+          git = (push: true, force: force, branch: branch, del: del, skip: skip, args: g.args);
         }
       }
       if (dd && w.startsWith('of=/dev/')) return _whyDisk;
@@ -184,6 +275,16 @@ String? _wordRules(String normalized) {
         if (w == '/') return _whyChmod;
         chmod = null;
       }
+    }
+    final g = git;
+    if (g != null && g.push) {
+      // `git push origin :main` and `git push --delete origin main` remove a main branch from the remote.
+      if (g.args.any((a) => a.startsWith(':') && _namesProtectedBranch(a)) || (g.del && g.args.any(_namesProtectedBranch))) {
+        return _whyDeleteBranch;
+      }
+      // A force push that names no branch goes wherever the push default points, which can be main (the first word is the
+      // remote); so does one that pushes HEAD or @, the current branch.
+      if (g.force && (g.args.length < 2 || g.args.skip(1).any(_isCurrentBranch))) return _whyForcePushNoBranch;
     }
   }
   return null;

@@ -432,5 +432,551 @@
    "url": "https://example.com"
   },
   "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "out=$(rm -rf / )"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "x=`rm -rf / `"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "echo \"x$(rm -rf /)\""
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "DROP\n DATABASE prod"
+  },
+  "blocked": "drops"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "TRUNCATE\n  TABLE users"
+  },
+  "blocked": "empties"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "drop \t database x"
+  },
+  "blocked": "drops"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --force"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --force-with-lease"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f origin"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin --force"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin :main"
+  },
+  "blocked": "deletes a main"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --delete origin main"
+  },
+  "blocked": "deletes a main"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin --delete main"
+  },
+  "blocked": "deletes a main"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin -d master"
+  },
+  "blocked": "deletes a main"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin :refs/heads/production"
+  },
+  "blocked": "deletes a main"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~/*"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf $HOME/*"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf \"$HOME\"/*"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ${HOME}/*"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf /*"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf /home/*"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf //"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf /./"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~/."
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm ~ -rf"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm $HOME -r"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm / -rf"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "r\\\nm -rf /"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git pu\\\nsh -f"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f origin feature-x"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --force-with-lease origin my-branch"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin feature-x"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --delete origin old-branch"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin :old-branch"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ./build"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~/projects/app/dist"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ./*"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf /tmp/x/*"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm ~/notes.txt"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "out=$(ls /)"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "echo \"x$(date)\""
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "select * from drops"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "echo foo\\\\\nrm -rf /"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "echo a\\\\\nrm -rf ~"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "printf x\\\\\ngit push -f origin main"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "echo foo\\\\\\\\\nrm -rf /"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "x\\\r\nrm -rf /"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "echo foo\\\\\\\nrm -rf /"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "r\\\\\nm -rf /"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf $(pwd)/*"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf \"$(pwd)\"/*"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf `pwd`/*"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf \"$(mktemp -d)/\""
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf \"$(dirname \"$0\")/..\""
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "echo $(rm -rf /)/x"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf $(pwd)/* /"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "x=`/bin/rm -rf /`"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f origin HEAD"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --force origin @"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin +HEAD"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f origin feature-x HEAD"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f -o ci.skip origin"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f --push-option ci.skip origin"
+  },
+  "blocked": "without naming"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f origin HEAD:feature-x"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -u origin HEAD"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f -o ci.skip origin feature-x"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f -o main origin feature-x"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~/.."
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf $HOME/.."
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~/../.."
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf \"${HOME}\"/.."
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~/x/.."
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~/*/*"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf /home/*/*"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~/x/../y"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~/projects/*/node_modules"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~/.cache/*"
+  },
+  "blocked": null
  }
 ]

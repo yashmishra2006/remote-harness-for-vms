@@ -127,6 +127,26 @@ void main() {
       }
     });
 
+    test('one huge word of brackets, quotes or backticks is cut once, not over and over (it runs on the UI isolate)', () {
+      // The word is cleaned of its wrapping characters; that used to copy the rest of the word once per character.
+      final sw = Stopwatch();
+      for (final unit in ['(', '`', '{', '}', ')', r'$(', '"', "'", '{}', '()', '\\', '\\\\\n', 'rm -rf )/', 'rm -rf `/', ')"/','rm ~/.. ', '/..', '~/*', 'git push -f -o x origin HEAD ']) {
+        final c = unit * ((maxCommandChars - 10) ~/ unit.length);
+        var best = 1 << 30;
+        for (var i = 0; i < 3; i++) {
+          sw
+            ..reset()
+            ..start();
+          bash(c);
+          bash('rm $c');
+          bash('x$c');
+          if (sw.elapsedMilliseconds < best) best = sw.elapsedMilliseconds;
+        }
+        // JIT, three commands per round: a generous bound that the old quadratic loop (over a second) broke by a wide margin.
+        expect(best, lessThan(200), reason: 'a 100k run of $unit took $best ms');
+      }
+    });
+
     test('a question for the person is turned back into the chat’s own decision', () {
       final v = decideAutonomously('AskUserQuestion', {});
       expect(v.allow, isFalse);
