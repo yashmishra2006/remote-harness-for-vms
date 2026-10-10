@@ -4,10 +4,13 @@
     "date": "2026-10-10",
     "title": "Machine chats that keep up, and tell you when they need you",
     "items": [
-      "Replies from Claude on your machines now appear as they are written, instead of all at once at the end.",
-      "When Claude needs your OK, you see it everywhere: a \"Needs your OK\" mark on the chat and its machine, a count on the Machines tab, and a banner wherever you are in the app.",
-      "Notifications for your machines: Claude needs your OK, or finished a task. Tapping one opens that exact chat. Turn them off in Settings > Notifications > Claude on your machines.",
-      "Nothing is lost when your computer sleeps or changes Wi-Fi: what it said while the connection was dropping is sent again, so you no longer need to reopen the app to see it."
+      "Machines: chats now keep their permission mode, so a chat stays as careful (or as hands-off) as you set it.",
+      "Machines: replies from Claude on your machines appear live as they are written, instead of all at once at the end.",
+      "Machines: notifications when Claude needs your OK or finishes a task. Tapping one opens that exact chat. Turn them off in Settings > Notifications > Claude on your machines.",
+      "Nothing is lost when your computer sleeps or changes Wi-Fi: what it said while the connection was dropping is sent again.",
+      "Autonomous mode is safer: it still works on its own, but now stops and asks before risky commands, such as ones that delete files, change system settings or overwrite shared code.",
+      "Updated legal policies (10 October 2026), and a list of the open-source licences the app uses.",
+      "A new app icon."
     ]
   },
   {
