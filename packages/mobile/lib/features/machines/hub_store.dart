@@ -381,15 +381,17 @@ class HubStore extends ChangeNotifier with WidgetsBindingObserver {
     unawaited(_pushNamed(vmId, sessionId, c, sent).catchError((_) {}));
   }
 
-  /// A new chat was just named. The mode goes again even though it went with the request that started the chat: agents from
-  /// before the hub passed it on (most machines out there) ignore that one. Model and effort go when they changed since that
-  /// request ([sent]), a change back to the default included; when what went with it is not known, as for any chat.
+  /// A new chat was just named. Every choice that is not the default goes again, though they went with the request that
+  /// started the chat: agents from before the hub passed them on (most machines out there) ignore all three there. A choice
+  /// changed back to the default since that request ([sent]) goes too.
   Future<void> _pushNamed(String vmId, String sessionId, ChatChoices c, ChatChoices? sent) async {
-    if (sent == null) return _pushChoices(vmId, sessionId, SavedChoices(mode: c.mode, model: c.model, effort: c.effort));
+    final mode = isPermissionMode(c.mode) && (c.mode != 'default' || (sent != null && sent.mode != c.mode));
+    final model = c.model.isNotEmpty || (sent != null && sent.model != c.model);
+    final effort = (c.effort.isNotEmpty && isEffortLevel(c.effort)) || (c.effort.isEmpty && sent != null && sent.effort != c.effort);
     await Future.wait([
-      if (isPermissionMode(c.mode) && (c.mode != 'default' || c.mode != sent.mode)) api.setPermissionMode(vmId, sessionId, c.mode),
-      if (c.model != sent.model) api.setModel(vmId, sessionId, c.model),
-      if (c.effort != sent.effort && (c.effort.isEmpty || isEffortLevel(c.effort))) api.setEffort(vmId, sessionId, c.effort),
+      if (mode) api.setPermissionMode(vmId, sessionId, c.mode),
+      if (model) api.setModel(vmId, sessionId, c.model),
+      if (effort) api.setEffort(vmId, sessionId, c.effort),
     ]);
   }
 

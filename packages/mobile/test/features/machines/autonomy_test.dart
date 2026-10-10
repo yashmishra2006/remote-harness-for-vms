@@ -1,4 +1,5 @@
 import 'dart:convert';
+import 'dart:io';
 
 import 'package:escanor/core/storage.dart';
 import 'package:escanor/features/machines/autonomy.dart';
@@ -81,6 +82,49 @@ void main() {
       }
       expect(decideAutonomously('Write', {'file_path': '/etc/sudoers'}).allow, isFalse);
       expect(decideAutonomously('Edit', {'file_path': '/home/u/.ssh/authorized_keys'}).allow, isFalse);
+    });
+
+    test('answers every case the machine\'s agent answers (packages/shared/test/autonomy-cases.json)', () {
+      final cases = jsonDecode(File('../shared/test/autonomy-cases.json').readAsStringSync()) as List;
+      expect(cases.length, greaterThan(50));
+      for (final c in cases.cast<Map<String, dynamic>>()) {
+        final v = decideAutonomously(c['tool'] as String, Map<String, dynamic>.from(c['input'] as Map));
+        final blocked = c['blocked'] as String?;
+        if (blocked == null) {
+          expect(v.allow, isTrue, reason: '${c['tool']} ${c['input']} must be allowed (got ${v.reason})');
+        } else {
+          expect(v.allow, isFalse, reason: '${c['tool']} ${c['input']} must be blocked');
+          expect(v.reason, contains(blocked), reason: '${c['tool']} ${c['input']}');
+        }
+      }
+    });
+
+    test('a line continuation or extra spaces do not hide a command', () {
+      expect(bash('git push --force origin \\\n main').allow, isFalse);
+      expect(bash('git push origin main \\\n --force').allow, isFalse);
+      expect(bash('rm -rf \\\n /').allow, isFalse);
+      expect(normalizeCommand('a\t\t b\nc'), 'a b\nc');
+    });
+
+    test('a command too long to check is refused, and long ones are checked fast', () {
+      final huge = List.generate(100000, (i) => 't$i').join(' ');
+      final sw = Stopwatch()..start();
+      expect(bash(huge).reason, contains('too long to check'));
+      expect(sw.elapsedMilliseconds, lessThan(50));
+      String fill(String unit) => unit * ((maxCommandChars - 10) ~/ unit.length);
+      // Just under the limit, shaped to make a backtracking pattern blow up. The best of three, since this runs in the debug VM
+      // (the app itself is compiled ahead of time, several times faster).
+      for (final c in [fill('git push '), fill('rm -r '), fill('dd '), fill('chmod 7'), fill('git push -f '), fill('a\\\n'), fill(' '), fill('\t '), fill('>/dev/s'), fill(':(){ ')]) {
+        var best = 1 << 30;
+        for (var i = 0; i < 3; i++) {
+          sw
+            ..reset()
+            ..start();
+          bash(c);
+          if (sw.elapsedMilliseconds < best) best = sw.elapsedMilliseconds;
+        }
+        expect(best, lessThan(50), reason: '${c.substring(0, 12)}...');
+      }
     });
 
     test('a question for the person is turned back into the chat’s own decision', () {

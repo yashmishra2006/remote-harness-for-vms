@@ -59,7 +59,7 @@ void main() {
     expect(sockets[0].closed, isTrue);
   });
 
-  test('what was picked for a new chat goes with the request that starts it; once named, the mode goes again', () async {
+  test('what was picked for a new chat goes with the request that starts it; once named, every choice that is not the default goes again', () async {
     answer = (req) => req.url.path.endsWith('/sessions') ? http.Response(jsonEncode({'tempId': 't1'}), 202) : http.Response('{"ok":true}', 202);
     final store = make();
     await store.startNewChat('v', input, choices: const ChatChoices(mode: 'plan', model: 'claude-opus-5-5', effort: 'high'));
@@ -71,8 +71,12 @@ void main() {
     await pumpEventQueue();
     expect(store.state.selectedSessionId, 's1');
     expect(store.namedAs('t1'), 's1');
-    // Agents from before the hub passed the mode on ignore the one in the request; model and effort did not change since.
-    expect(sent.skip(1).map((r) => '${r.url.path} ${r.body}'), ['/api/vms/v/sessions/s1/permission-mode {"mode":"plan"}']);
+    // Agents from before the hub passed them on ignore all three in the request.
+    expect(sent.skip(1).map((r) => '${r.url.path} ${r.body}'), [
+      '/api/vms/v/sessions/s1/permission-mode {"mode":"plan"}',
+      '/api/vms/v/sessions/s1/model {"model":"claude-opus-5-5"}',
+      '/api/vms/v/sessions/s1/effort {"effort":"high"}',
+    ]);
     expect(store.savedChoices('v', 's1'), const SavedChoices(mode: 'plan', model: 'claude-opus-5-5', effort: 'high'));
   });
 

@@ -1,0 +1,436 @@
+[
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf /"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf / --no-preserve-root"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "sudo rm -rf /*"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ~"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf $HOME"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf \"$HOME\""
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -fr /home"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "/bin/rm -r -f /etc/"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "echo $(rm -rf /)"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf \\\n /"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "mkfs.ext4 /dev/sda1"
+  },
+  "blocked": "formats"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "dd if=/dev/zero of=/dev/sda bs=1M"
+  },
+  "blocked": "disk"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "echo x > /dev/sda"
+  },
+  "blocked": "disk"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": ":(){ :|:& };:"
+  },
+  "blocked": "fork bomb"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "chmod -R 777 /"
+  },
+  "blocked": "opens up"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "shutdown -h now"
+  },
+  "blocked": "turns the machine off"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "sudo reboot"
+  },
+  "blocked": "turns the machine off"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --force origin main"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin main --force"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -f origin master"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin main -f"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --force-with-lease origin production"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git -C repo push -f origin main"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin +main"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --force origin \\\n main"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin main \\\n --force"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "cd app && git push -f origin release"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "psql -c \"DROP DATABASE prod\""
+  },
+  "blocked": "drops"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "userdel -r alice"
+  },
+  "blocked": "who can log in"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "passwd -d bob"
+  },
+  "blocked": "who can log in"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "ufw disable"
+  },
+  "blocked": "firewall"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "iptables -F"
+  },
+  "blocked": "firewall"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "mysql -e \"truncate table users\""
+  },
+  "blocked": "empties"
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "npm test"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf build"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf node_modules && npm ci"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "rm -rf ./dist /tmp/x"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin feature"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --force origin feature"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push origin main"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push -u origin feature/x"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --force origin feature && git checkout main"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "docker compose up -d"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "sudo apt-get install -y jq"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "curl -s localhost:3000/health"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "systemctl restart app"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "chmod 755 /usr/local/bin/tool"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "chmod -R 777 ./public"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "echo done; ls /"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "dd if=in.img of=out.img"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Bash",
+  "input": {
+   "command": "git push --follow-tags origin main"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Monitor",
+  "input": {
+   "command": "rm -rf /"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "PowerShell",
+  "input": {
+   "command": "git push --force origin main"
+  },
+  "blocked": "force-pushes"
+ },
+ {
+  "tool": "mcp__ssh__run",
+  "input": {
+   "cmd": "rm -rf /"
+  },
+  "blocked": "wipes"
+ },
+ {
+  "tool": "mcp__box__exec",
+  "input": {
+   "script": "ufw disable"
+  },
+  "blocked": "firewall"
+ },
+ {
+  "tool": "mcp__box__exec",
+  "input": {
+   "script": "npm test"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "mcp__box__exec",
+  "input": {
+   "command": 42
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Write",
+  "input": {
+   "file_path": "/etc/sudoers"
+  },
+  "blocked": "system file"
+ },
+ {
+  "tool": "Edit",
+  "input": {
+   "file_path": "/home/u/.ssh/authorized_keys"
+  },
+  "blocked": "who can log in"
+ },
+ {
+  "tool": "Write",
+  "input": {
+   "file_path": "/home/u/app/main.ts"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "Write",
+  "input": {
+   "file_path": "/home/u/.config/app.json"
+  },
+  "blocked": null
+ },
+ {
+  "tool": "WebFetch",
+  "input": {
+   "url": "https://example.com"
+  },
+  "blocked": null
+ }
+]

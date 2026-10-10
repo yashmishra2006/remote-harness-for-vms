@@ -482,7 +482,60 @@ describe('SessionManager', () => {
       const hook = hookOf(calls[0]);
       assert.deepEqual(await bash(hook, 'git push --force origin main'), {});
       manager.setPermissionMode('t1', 'auto'); // the run is still going
+      await new Promise((r) => setTimeout(r, 10)); // ...and takes effect once Claude Code has taken the mode
       assert.ok(denied(await bash(hook, 'git push --force origin main')));
+      release();
+    });
+
+    it('guards a chat whose bypass comes only from the machine default (a request that names no mode, like the assistant\'s)', async () => {
+      const { manager, calls } = make({ defaultMode: 'bypassPermissions', isRoot: false });
+      manager.handleUserInput({ type: 'user_input', sessionId: 't1', tempId: 't1', text: 'deploy it' }); // no permissionMode
+      assert.equal(calls[0].permissionMode, 'bypassPermissions');
+      assert.ok(denied(await bash(hookOf(calls[0]), 'git push --force origin main')));
+      // Any tool that runs a command, not only Bash.
+      const monitor = await hookOf(calls[0])({ hook_event_name: 'PreToolUse', tool_name: 'Monitor', tool_input: { command: 'rm -rf /' }, tool_use_id: 'u3' }, 'u3', { signal });
+      assert.ok(denied(monitor));
+      const mcp = await hookOf(calls[0])({ hook_event_name: 'PreToolUse', tool_name: 'mcp__box__exec', tool_input: { cmd: 'ufw disable' }, tool_use_id: 'u4' }, 'u4', { signal });
+      assert.ok(denied(mcp));
+    });
+
+    it('blocks what it could not check', async () => {
+      const { manager, calls } = make({ defaultMode: 'bypassPermissions', isRoot: false });
+      start(manager);
+      const input = {
+        get command(): string {
+          throw new Error('unreadable');
+        },
+      };
+      const out = await hookOf(calls[0])({ hook_event_name: 'PreToolUse', tool_name: 'Bash', tool_input: input, tool_use_id: 'u5' }, 'u5', { signal });
+      assert.ok(denied(out));
+      assert.equal(out.hookSpecificOutput.permissionDecisionReason, 'Escanor could not check this command, so it was blocked.');
+    });
+
+    it('a switch Claude Code refuses changes nothing about what the chat answers by itself', async () => {
+      const calls: any[] = [];
+      const sent: AgentToHubMessage[] = [];
+      let release!: () => void;
+      const held = new Promise<void>((r) => (release = r));
+      const query = ((args: any) => {
+        calls.push(args.options);
+        return {
+          [Symbol.asyncIterator]: async function* () {
+            await held;
+          },
+          interrupt: async () => {}, setPermissionMode: async () => { throw new Error('bypass_not_launched'); }, setModel: async () => {},
+          applyFlagSettings: async () => {}, setMcpServers: async () => {}, mcpServerStatus: async () => [], close: () => {},
+        };
+      }) as never;
+      const dir = realpathSync(mkdtempSync(join(tmpdir(), 'sm-test-')));
+      const m = new SessionManager(dir, join(dir, 'data'), [{ id: 'default', label: 'default' }], (x) => sent.push(x), { query, isRoot: false } as never);
+      start(m);
+      m.setPermissionMode('t1', 'bypassPermissions');
+      await new Promise((r) => setTimeout(r, 10));
+      assert.ok(sent.some((x) => x.type === 'error' && /permission mode failed/.test((x as { message: string }).message)));
+      void calls[0].canUseTool('Bash', { command: 'rm -rf build' }, { signal });
+      await new Promise((r) => setTimeout(r, 10));
+      assert.equal(sent.filter((x) => x.type === 'permission_request').length, 1, 'still asks the phone: it is not in bypass');
       release();
     });
 

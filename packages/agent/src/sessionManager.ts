@@ -34,8 +34,11 @@ type LiveSession = {
   close: () => void;
   /** The mode the chat is in now (after effectiveMode). In bypass, canUseTool answers everything itself. */
   mode: PermissionMode;
-  /** The mode the person picked ('auto' stays 'auto' here even where it runs as bypass): decides whether the blocklist applies. */
-  requested: PermissionMode;
+  /**
+   * The mode the phone or app explicitly asked for ('auto' stays 'auto' here even where it runs as bypass), or undefined when
+   * none was (the machine's default applies). Decides whether the blocklist applies.
+   */
+  requested: PermissionMode | undefined;
   appliedMcp: string; // the MCP config this session was last given, so an unchanged re-push is a no-op
 };
 
@@ -300,12 +303,14 @@ export class SessionManager {
   }
 
   /**
-   * Bypass with the phone's blocklist (see @remote-harness/shared/autonomy): an Autonomous chat that runs as bypass here, and
-   * the root fallback. Only a chat the person explicitly set to "Bypass permissions" (not as root) runs without it.
+   * Bypass with the phone's blocklist (see @remote-harness/shared/autonomy): any chat in bypass that was not explicitly set to
+   * "Bypass permissions" (an Autonomous chat, or one whose bypass comes only from the machine's default, such as a request from
+   * the assistant that names no mode), and the root fallback. Only a chat the phone or app explicitly set to "Bypass
+   * permissions" (not as root) runs without it.
    */
   private guarded(session: LiveSession | undefined): boolean {
     if (!session || session.mode !== 'bypassPermissions') return false;
-    return session.requested === 'auto' || this.rootFallback;
+    return session.requested !== 'bypassPermissions' || this.rootFallback;
   }
 
   /** The mode Claude Code itself runs in: as root, bypass is answered by canUseTool instead (see runningAsRoot). */
@@ -333,8 +338,8 @@ export class SessionManager {
     // opt-in, so every run gets it (bypass is open to every plan when the person picks it). The opt-in only makes the switch
     // possible: a chat in default mode still asks for everything it asked for before (in the SDK's non-interactive runs it
     // does not even change plan mode). Never as root, where Claude Code refuses it outright.
-    const requested = choices.permissionMode ?? this.opts.defaultMode ?? 'default';
-    const startMode = this.effectiveMode(requested);
+    const requested = choices.permissionMode;
+    const startMode = this.effectiveMode(requested ?? this.opts.defaultMode ?? 'default');
     let session!: LiveSession;
     const options: Options = {
       cwd,
@@ -358,10 +363,15 @@ export class SessionManager {
           {
             hooks: [
               async (hookInput) => {
-                if (hookInput.hook_event_name !== 'PreToolUse' || !this.guarded(session)) return {};
-                const why = autonomousBlockReason(hookInput.tool_name, hookInput.tool_input);
-                if (!why) return {};
-                return { hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: blockedMessage(why) } };
+                const deny = (reason: string) => ({ hookSpecificOutput: { hookEventName: 'PreToolUse' as const, permissionDecision: 'deny' as const, permissionDecisionReason: reason } });
+                try {
+                  if (hookInput.hook_event_name !== 'PreToolUse' || !this.guarded(session)) return {};
+                  const why = autonomousBlockReason(hookInput.tool_name, hookInput.tool_input);
+                  return why ? deny(blockedMessage(why)) : {};
+                } catch {
+                  // A check that fails must not let the command through.
+                  return deny('Escanor could not check this command, so it was blocked.');
+                }
               },
             ],
           },
@@ -537,10 +547,13 @@ export class SessionManager {
     const live = this.live.get(sessionId);
     if (!live) return;
     const mode = this.effectiveMode(requested);
-    live.requested = requested;
-    live.mode = mode;
-    // Every run (not as root) was launched with the opt-in, so even a switch to bypass is just Claude Code's own set-mode.
-    this.control(sessionId, 'Changing the permission mode', (l) => l.setPermissionMode(mode));
+    // Every run (not as root) was launched with the opt-in, so even a switch to bypass is just Claude Code's own set-mode. What
+    // this chat answers by itself changes only once Claude Code has taken the new mode.
+    this.control(sessionId, 'Changing the permission mode', async (l) => {
+      await l.setPermissionMode(mode);
+      l.requested = requested;
+      l.mode = mode;
+    });
   }
 
   setModel(sessionId: string, model: string | undefined): void {
